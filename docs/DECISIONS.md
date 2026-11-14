@@ -197,7 +197,9 @@ benefit, since names are protected by decision 11.
 
 No copies are queued for a disabled destination, and disabling one cancels
 its waiting copies, so staging is not held up by a destination nobody is
-using. Removing a destination from the configuration forgets its copies in
+using. Saving any storage setting makes the mover retry failing destinations
+at once instead of waiting out the retry schedule: someone probably just
+fixed something. Removing a destination from the configuration forgets its copies in
 the index; **the files on it are left alone**.
 
 ### 18. Changing the staging folder
@@ -227,6 +229,10 @@ is also rebuilt automatically when the database file is missing or fails
 
 Rows of recordings that no longer exist anywhere are removed from the index a
 day later, so the database does not grow without bound.
+
+The database has the tables and indexes of spec 10.5 plus one more index,
+`idx_copies_destination_state`, which keeps the per-destination usage, queue
+and retention queries fast once there are hundreds of thousands of rows.
 
 ## Guardian
 

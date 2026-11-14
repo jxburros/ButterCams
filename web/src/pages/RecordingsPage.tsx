@@ -10,7 +10,7 @@ import { useLoad, usePageTitle } from '../lib/hooks';
 const CLOSE_REASONS: Record<string, string> = {
   hour_rollover: 'Hour rollover',
   stall: 'Stream stalled',
-  shutdown: 'Service shutdown',
+  shutdown: 'Camera or service stopped',
   crash_recovered: 'Recovered after a crash',
   param_change: 'Stream settings changed',
   clock_jump: 'Clock change',
@@ -157,7 +157,9 @@ export function RecordingsPage() {
                           Download
                         </a>
                       ) : (
-                        <span className="muted">No copy left to download</span>
+                        <span className="muted">
+                          {segment.end === null ? 'Can be downloaded once the file is closed' : 'No copy left to download'}
+                        </span>
                       )}
                     </td>
                   </tr>

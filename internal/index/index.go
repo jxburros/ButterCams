@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS copies (
   PRIMARY KEY (segment_id, destination_id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_copies_destination_state ON copies(destination_id, state);
+
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY,
   ts TEXT NOT NULL,

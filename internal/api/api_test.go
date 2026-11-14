@@ -8,7 +8,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -892,5 +891,3 @@ func TestUnknownAPIPathAndUIFallback(t *testing.T) {
 		}
 	}
 }
-
-var _ = errors.New

@@ -339,7 +339,11 @@ func (g *Guardian) startRebuild(manual bool) error {
 			g.log.Info("index rebuild started", "roots", len(roots), "manual", manual)
 			// The scan runs beside normal operation; only the final update of
 			// the tables excludes the message handlers.
-			res, err = g.rebuildLocked(roots, cfg)
+			res, err = g.db.Rebuild(g.ctx, roots, WantDest(cfg), func(n int) {
+				g.mu.Lock()
+				g.rebuild.Segments = n
+				g.mu.Unlock()
+			})
 		})
 		done := time.Now()
 		g.mu.Lock()
@@ -371,15 +375,6 @@ func (g *Guardian) startRebuild(manual bool) error {
 		g.requeueCopies() // staging files that still have to go somewhere
 	}()
 	return nil
-}
-
-func (g *Guardian) rebuildLocked(roots []index.Root, cfg *config.Config) (index.RebuildResult, error) {
-	progress := func(n int) {
-		g.mu.Lock()
-		g.rebuild.Segments = n
-		g.mu.Unlock()
-	}
-	return g.db.Rebuild(g.ctx, roots, WantDest(cfg), progress)
 }
 
 // Rebuild returns the state of the last index rebuild.

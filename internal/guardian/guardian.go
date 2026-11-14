@@ -9,11 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime/debug"
-	"sort"
 	"sync"
 	"time"
 
@@ -347,11 +347,10 @@ func (g *Guardian) start() error {
 	return nil
 }
 
-type teeTarget interface{ Write([]byte) (int, error) }
-
-func teeWriter(f *os.File) teeTarget {
+// teeWriter returns the extra log destination for console mode, or nil.
+func teeWriter(f *os.File) io.Writer {
 	if f == nil {
-		return nil
+		return nil // a nil *os.File inside an interface would not be nil
 	}
 	return f
 }
@@ -537,12 +536,5 @@ func (g *Guardian) CameraStats() map[string]api.CameraStats {
 		}
 		out[id] = api.CameraStats{CameraStats: c.stats, WorkerID: c.workerID, UpdatedAt: c.received}
 	}
-	return out
-}
-
-// sortedCameraIDs returns the ids of the cameras assigned to a worker.
-func sortedCopy(in []string) []string {
-	out := append([]string(nil), in...)
-	sort.Strings(out)
 	return out
 }

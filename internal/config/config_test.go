@@ -14,6 +14,9 @@ var (
 	no      = false
 	winEnv  = Env{Windows: &yes, IsRemoteDrive: func(p string) bool { return strings.HasPrefix(strings.ToUpper(p), "Z:") }}
 	unixEnv = Env{Windows: &no}
+	// nativeEnv uses the path rules of the system the tests run on; the store
+	// tests need it because they work in real temporary folders.
+	nativeEnv = Env{}
 )
 
 func validWin() *Config {
@@ -140,7 +143,7 @@ func TestReservedFieldsRoundTrip(t *testing.T) {
 
 func TestStoreSaveKeepsTenBackupsAndIsAtomic(t *testing.T) {
 	dir := t.TempDir()
-	s := NewStore(dir, unixEnv)
+	s := NewStore(dir, nativeEnv)
 	res, err := s.Load(filepath.Join(dir, "staging"))
 	if err != nil || !res.Created {
 		t.Fatalf("first load: %+v %v", res, err)
@@ -173,7 +176,7 @@ func TestStoreSaveKeepsTenBackupsAndIsAtomic(t *testing.T) {
 
 func TestStoreRejectsInvalidAndLeavesFileUntouched(t *testing.T) {
 	dir := t.TempDir()
-	s := NewStore(dir, unixEnv)
+	s := NewStore(dir, nativeEnv)
 	cfg := Default(filepath.Join(dir, "staging"))
 	if err := s.Save(cfg); err != nil {
 		t.Fatal(err)
@@ -192,7 +195,7 @@ func TestStoreRejectsInvalidAndLeavesFileUntouched(t *testing.T) {
 
 func TestStoreFallsBackToNewestReadableBackup(t *testing.T) {
 	dir := t.TempDir()
-	s := NewStore(dir, unixEnv)
+	s := NewStore(dir, nativeEnv)
 	cfg := Default(filepath.Join(dir, "staging"))
 	for _, port := range []int{8001, 8002, 8003} {
 		cfg.Server.Port = port
@@ -214,7 +217,7 @@ func TestStoreFallsBackToNewestReadableBackup(t *testing.T) {
 
 func TestStoreFailsWhenNothingIsReadable(t *testing.T) {
 	dir := t.TempDir()
-	s := NewStore(dir, unixEnv)
+	s := NewStore(dir, nativeEnv)
 	os.WriteFile(s.Path(), []byte("not json"), 0o600)
 	if _, err := s.Load(filepath.Join(dir, "staging")); err == nil {
 		t.Fatal("expected an error")
