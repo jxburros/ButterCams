@@ -89,6 +89,10 @@ export interface CameraStats {
   /** Reason for backoff / error. */
   message: string;
   lastPacketTs: Timestamp | null;
+  /** Age of the last video packet when the recorder last reported, in seconds (server clock). */
+  lastPacketAgeSec: number | null;
+  /** Seconds since the recorder last reported on this camera (server clock). */
+  reportAgeSec: number;
   videoCodec: string;
   audioCodec: string;
   /** For example "audio not recorded: speex". */

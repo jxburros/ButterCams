@@ -99,17 +99,17 @@ func (w *Worker) run(ctx context.Context, in io.Reader) error {
 		r := ipc.NewReader(in)
 		for {
 			m, err := r.Next()
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					readErr <- nil
-					return
-				}
-				if errors.Is(err, io.ErrClosedPipe) || errors.Is(err, io.ErrUnexpectedEOF) {
-					readErr <- err
-					return
-				}
+			if errors.Is(err, ipc.ErrMalformed) {
 				log.Warn("ignoring malformed message from the guardian", "error", err.Error())
 				continue
+			}
+			if err != nil {
+				// End of input or a broken pipe: the guardian is gone.
+				if errors.Is(err, io.EOF) {
+					err = nil
+				}
+				readErr <- err
+				return
 			}
 			msgs <- m
 		}
@@ -194,10 +194,10 @@ func (w *Worker) handle(m any) (stop bool) {
 			c.Stop()
 		}
 		for _, cam := range msg.Cameras {
-			w.upsert(cam)
+			w.upsert(cam, msg.UsedNames[cam.ID])
 		}
 	case *ipc.UpdateCamera:
-		w.upsert(msg.Camera)
+		w.upsert(msg.Camera, msg.UsedNames)
 	case *ipc.RemoveCamera:
 		w.mu.Lock()
 		c := w.cams[msg.CameraID]
@@ -231,14 +231,14 @@ func (w *Worker) handle(m any) (stop bool) {
 	return false
 }
 
-func (w *Worker) upsert(cfg config.Camera) {
+func (w *Worker) upsert(cfg config.Camera, usedNames []string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if c, ok := w.cams[cfg.ID]; ok {
 		c.Update(cfg)
 		return
 	}
-	c := newCamera(w, cfg, w.staging)
+	c := newCamera(w, cfg, w.staging, usedNames)
 	w.cams[cfg.ID] = c
 	w.bases[cfg.ID] = &statsBase{at: time.Now()}
 	go c.run()

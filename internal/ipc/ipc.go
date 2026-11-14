@@ -9,6 +9,7 @@ package ipc
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -102,12 +103,17 @@ type Assign struct {
 	Header
 	StagingPath string          `json:"stagingPath"`
 	Cameras     []config.Camera `json:"cameras"`
+	// UsedNames lists, per camera, the recording names of the last hours
+	// that are already in the index. A camera never reuses them, even when
+	// the files have since left the staging folder.
+	UsedNames map[string][]string `json:"usedNames,omitempty"`
 }
 
 // UpdateCamera adds a camera or replaces its configuration.
 type UpdateCamera struct {
 	Header
-	Camera config.Camera `json:"camera"`
+	Camera    config.Camera `json:"camera"`
+	UsedNames []string      `json:"usedNames,omitempty"`
 }
 
 // RemoveCamera stops and forgets a camera.
@@ -231,8 +237,11 @@ type Event struct {
 // Destinations gives the mover the current storage configuration.
 type Destinations struct {
 	Header
-	Staging      config.Staging       `json:"staging"`
-	Destinations []config.Destination `json:"destinations"`
+	Staging config.Staging `json:"staging"`
+	// OldStagingPaths are earlier staging folders that may still hold files
+	// recorded before the staging path was changed (spec 7.1).
+	OldStagingPaths []string             `json:"oldStagingPaths,omitempty"`
+	Destinations    []config.Destination `json:"destinations"`
 }
 
 // CopyJob asks the mover to copy one closed segment to one destination.
@@ -389,12 +398,16 @@ func Marshal(msg any) ([]byte, error) {
 	return json.Marshal(msg)
 }
 
+// ErrMalformed is wrapped by the error returned for a line that is not a
+// valid message. The stream itself is still usable.
+var ErrMalformed = errors.New("malformed message")
+
 // Unmarshal decodes one JSON line into its typed message. It returns
 // (nil, nil) for a well-formed message of an unknown type.
 func Unmarshal(line []byte) (any, error) {
 	var h Header
 	if err := json.Unmarshal(line, &h); err != nil {
-		return nil, fmt.Errorf("ipc: bad message: %w", err)
+		return nil, fmt.Errorf("ipc: %w: %v", ErrMalformed, err)
 	}
 	var msg any
 	switch h.Type {
@@ -438,7 +451,7 @@ func Unmarshal(line []byte) (any, error) {
 		return nil, nil
 	}
 	if err := json.Unmarshal(line, msg); err != nil {
-		return nil, fmt.Errorf("ipc: bad %s message: %w", h.Type, err)
+		return nil, fmt.Errorf("ipc: %w (%s): %v", ErrMalformed, h.Type, err)
 	}
 	return msg, nil
 }

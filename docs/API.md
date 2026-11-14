@@ -69,6 +69,8 @@ Five failed logins lock the account for 15 minutes (`423 account_locked`).
     "stateSince": "2026-11-14T08:00:00.000-06:00",
     "message": "",                 // reason for backoff / error
     "lastPacketTs": "2026-11-14T09:00:04.900-06:00",
+    "lastPacketAgeSec": 0.1,       // age of the last video packet when the recorder reported (server clock)
+    "reportAgeSec": 2.4,           // seconds since that report (server clock)
     "videoCodec": "h264", "audioCodec": "aac",
     "audioNote": "",               // e.g. "audio not recorded: speex"
     "width": 2688, "height": 1520, "fps": 15,

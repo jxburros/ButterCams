@@ -58,7 +58,11 @@ func existingParent(path string) string {
 // DiskFree returns the free and total bytes of the volume holding path. The
 // path does not have to exist yet; its nearest existing parent is used.
 func DiskFree(path string) (free, total uint64, err error) {
-	dir, err := windows.UTF16PtrFromString(existingParent(path))
+	parent := existingParent(path)
+	if len(parent) >= 2 && parent[:2] == `\\` && parent[len(parent)-1] != '\\' {
+		parent += `\` // a UNC name must end with a backslash
+	}
+	dir, err := windows.UTF16PtrFromString(parent)
 	if err != nil {
 		return 0, 0, err
 	}

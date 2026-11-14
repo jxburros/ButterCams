@@ -1,5 +1,5 @@
 import { api } from '../api/client';
-import type { Camera, Destination } from '../api/types';
+import type { Camera, CameraStats, Destination } from '../api/types';
 import { Alert } from '../components/Alert';
 import { CameraStateBadge, DestinationStateBadge, HealthBadge, SeverityBadge } from '../components/Badge';
 import { StagingSummary } from '../components/StagingSummary';
@@ -24,7 +24,17 @@ function audioText(camera: Camera): string {
   return stats.audioCodec ? formatCodec(stats.audioCodec) : 'None';
 }
 
-function CameraRow({ camera, now }: { camera: Camera; now: number }) {
+/**
+ * Age of the camera's last video packet. Both figures come from the server's
+ * clock, so a viewer PC with a wrong clock still sees the right age.
+ */
+function lastPacketText(stats: CameraStats): string {
+  if (stats.reportAgeSec > 20) return `no report for ${formatDuration(stats.reportAgeSec)}`;
+  if (stats.lastPacketAgeSec === null) return EMPTY;
+  return stats.lastPacketAgeSec < 1 ? 'just now' : `${formatDuration(stats.lastPacketAgeSec)} ago`;
+}
+
+function CameraRow({ camera }: { camera: Camera }) {
   const stats = camera.stats;
   return (
     <tr>
@@ -37,7 +47,7 @@ function CameraRow({ camera, now }: { camera: Camera; now: number }) {
       <td>{stats ? formatResolution(stats.width, stats.height) : EMPTY}</td>
       <td>{stats ? formatCodec(stats.videoCodec) : EMPTY}</td>
       <td>{audioText(camera)}</td>
-      <td>{stats ? formatAge(stats.lastPacketTs, now) : EMPTY}</td>
+      <td>{stats ? lastPacketText(stats) : EMPTY}</td>
       <td className="num">{stats && stats.currentFile !== '' ? formatBytes(stats.currentFileBytes) : EMPTY}</td>
     </tr>
   );
@@ -133,7 +143,7 @@ export function DashboardPage() {
                 </thead>
                 <tbody>
                   {cameras.data.cameras.map((camera) => (
-                    <CameraRow key={camera.id} camera={camera} now={now} />
+                    <CameraRow key={camera.id} camera={camera} />
                   ))}
                 </tbody>
               </table>

@@ -138,7 +138,7 @@ type Camera struct {
 	st camStats
 }
 
-func newCamera(w *Worker, cfg config.Camera, staging string) *Camera {
+func newCamera(w *Worker, cfg config.Camera, staging string, usedNames []string) *Camera {
 	c := &Camera{
 		w:       w,
 		id:      cfg.ID,
@@ -150,6 +150,9 @@ func newCamera(w *Worker, cfg config.Camera, staging string) *Camera {
 		staging: staging,
 		used:    map[string]bool{},
 		gapNext: true, // the first file after a start is never continuous
+	}
+	for _, name := range usedNames {
+		c.used[name] = true
 	}
 	c.reader = c.fan.Register("file-writer", writerQueue)
 	c.applyConfig(cfg)

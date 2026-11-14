@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jxburros/buttercams/internal/config"
 	"github.com/jxburros/buttercams/internal/ipc"
 	"github.com/jxburros/buttercams/internal/mp4meta"
 	"github.com/jxburros/buttercams/internal/naming"
@@ -432,5 +433,22 @@ func TestClockJumpStartsNewFileAtKeyframe(t *testing.T) {
 	p2, _ := naming.Parse(filepath.Base(second.Path))
 	if got := p2.HourStart.Sub(p1.HourStart); got != 3*time.Hour {
 		t.Fatalf("new file is named %v after the old one, want the corrected time (3h)", got)
+	}
+}
+
+// Names the guardian says are taken are never reused, even though no such
+// file is in staging any more (it was copied away, or deleted).
+func TestUsedNamesFromGuardianAreNotReused(t *testing.T) {
+	t.Parallel()
+	sim := startSim(t, simulator.Stream{Path: "/cam"})
+	h := startWorker(t, t.TempDir(), nil)
+	now := time.Now()
+	taken := []string{naming.FileName("cam", now, 0), naming.FileName("cam", now, 1)}
+	h.send(&ipc.Assign{StagingPath: h.staging, Cameras: []config.Camera{simCamera(t, sim, "cam", "/cam")},
+		UsedNames: map[string][]string{"cam": taken}})
+	opened, _ := h.waitOpened(15*time.Second, 0)
+	p, _ := naming.Parse(filepath.Base(opened.Path))
+	if p.HourStart.Equal(naming.HourStart(now)) && p.Index != 2 {
+		t.Fatalf("new file %s reuses a name the index already holds", filepath.Base(opened.Path))
 	}
 }
