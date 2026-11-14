@@ -21,9 +21,6 @@ func NewKillOnCloseJob() (*Job, error) {
 	return &Job{pids: map[int]struct{}{}}, nil
 }
 
-// AssignSelf is a no-op outside Windows.
-func (j *Job) AssignSelf() error { return nil }
-
 // Assign records a child process.
 func (j *Job) Assign(pid int) error {
 	j.mu.Lock()

@@ -20,6 +20,13 @@ import (
 // assignAll distributes the configured cameras over workers at start-up: up
 // to CamerasPerWorker each, filling workers in camera order (spec 4.1).
 func (g *Guardian) assignAll() {
+	for _, w := range g.planAssignments() {
+		w.proc.Start()
+	}
+}
+
+// planAssignments fills the worker table and returns the workers to start.
+func (g *Guardian) planAssignments() []*workerState {
 	cfg := g.config()
 	g.mu.Lock()
 	var start []*workerState
@@ -34,9 +41,7 @@ func (g *Guardian) assignAll() {
 		g.camWorker[cam.ID] = id
 	}
 	g.mu.Unlock()
-	for _, w := range start {
-		w.proc.Start()
-	}
+	return start
 }
 
 func (g *Guardian) newWorkerLocked(id int) *workerState {

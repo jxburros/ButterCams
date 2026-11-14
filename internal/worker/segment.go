@@ -3,6 +3,7 @@ package worker
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"hash"
@@ -69,7 +70,8 @@ type sample struct {
 	dts   int64
 	dur   uint32 // audio only: nominal duration
 	key   bool
-	data  []byte
+	nalus [][]byte // video: the NAL units of the access unit, as received
+	data  []byte   // audio: the access unit
 	recv  time.Time
 }
 
@@ -104,22 +106,25 @@ type segment struct {
 	hash  hash.Hash
 	bytes int64
 	seq   uint32
-	buf   seekablebuffer.Buffer
 	frags []mp4meta.Fragment
+
+	// The fragment being assembled. The buffers are reused for every
+	// fragment, so steady-state recording allocates nothing here.
+	hdr   []byte               // moof + mdat header
+	vData []byte               // video samples, each NAL unit length-prefixed
+	aData []byte               // audio samples
+	vMeta []mp4meta.FragSample // one entry per pending video sample
+	aMeta []mp4meta.FragSample
 
 	// video timeline, 90 kHz, relative to the first sample of the file
 	vOrigin   int64 // session DTS of file time zero
 	vCount    int
-	vPending  []*fmp4.Sample
-	last      *fmp4.Sample
 	lastRel   int64
 	lastDur   int64
 	fragStart int64
 	fragKey   bool
 
 	// audio timeline, audio timescale, relative to the same instant
-	aPending  []*fmp4.Sample
-	aLast     *fmp4.Sample
 	aLastT    int64
 	aLastNom  uint32
 	aFragBase int64
@@ -207,7 +212,7 @@ func (s *segment) writeVideo(u sample) error {
 		s.vOrigin = u.dts
 	}
 	rel := u.dts - s.vOrigin
-	if s.last != nil {
+	if n := len(s.vMeta); s.vCount > 0 {
 		d := rel - s.lastRel
 		if d <= 0 || d > 10*mp4meta.VideoTimescale {
 			// Timestamps went backwards or jumped: keep the file's timeline
@@ -219,20 +224,30 @@ func (s *segment) writeVideo(u sample) error {
 			rel = s.lastRel + d
 			s.vOrigin = u.dts - rel
 		}
-		s.last.Duration = uint32(d)
+		if n > 0 {
+			s.vMeta[n-1].Duration = uint32(d)
+		}
 		s.lastDur = d
 	}
-	if len(s.vPending) > 0 && (u.key || rel-s.fragStart >= maxFragmentTicks) {
+	if len(s.vMeta) > 0 && (u.key || rel-s.fragStart >= maxFragmentTicks) {
 		if err := s.flush(); err != nil {
 			return err
 		}
 	}
-	if len(s.vPending) == 0 {
+	if len(s.vMeta) == 0 {
 		s.fragStart, s.fragKey = rel, u.key
 	}
-	smp := &fmp4.Sample{PTSOffset: int32(u.pts - u.dts), IsNonSyncSample: !u.key, Payload: u.data}
-	s.vPending = append(s.vPending, smp)
-	s.last, s.lastRel = smp, rel
+	// The NAL units go into the file exactly as received, each behind its
+	// four-byte length.
+	before := len(s.vData)
+	for _, nalu := range u.nalus {
+		s.vData = binary.BigEndian.AppendUint32(s.vData, uint32(len(nalu)))
+		s.vData = append(s.vData, nalu...)
+	}
+	s.vMeta = append(s.vMeta, mp4meta.FragSample{
+		Size: uint32(len(s.vData) - before), PTSOffset: int32(u.pts - u.dts), NonSync: !u.key,
+	})
+	s.lastRel = rel
 	s.vCount++
 	return nil
 }
@@ -247,7 +262,7 @@ func (s *segment) writeAudio(u sample) {
 	if t < 0 {
 		return // before the first video frame of this file
 	}
-	if s.aLast != nil {
+	if n := len(s.aMeta); n > 0 {
 		d := t - s.aLastT
 		if d <= 0 {
 			return // duplicate or reordered packet
@@ -256,51 +271,56 @@ func (s *segment) writeAudio(u sample) {
 			s.audioOff = true
 			return
 		}
-		s.aLast.Duration = uint32(d)
+		s.aMeta[n-1].Duration = uint32(d)
 	} else {
 		if t < s.aEnd {
 			t = s.aEnd
 		}
 		s.aFragBase = t
 	}
-	smp := &fmp4.Sample{Duration: u.dur, Payload: u.data}
-	s.aPending = append(s.aPending, smp)
-	s.aLast, s.aLastT, s.aLastNom = smp, t, u.dur
+	s.aData = append(s.aData, u.data...)
+	s.aMeta = append(s.aMeta, mp4meta.FragSample{Duration: u.dur, Size: uint32(len(u.data))})
+	s.aLastT, s.aLastNom = t, u.dur
 }
 
-// flush writes the pending samples as one fragment.
+// flush writes the pending samples as one fragment: a moof, then an mdat
+// holding the video samples followed by the audio samples.
 func (s *segment) flush() error {
-	if len(s.vPending) == 0 && len(s.aPending) == 0 {
+	if len(s.vMeta) == 0 && len(s.aMeta) == 0 {
 		return nil
 	}
 	s.seq++
-	part := fmp4.Part{SequenceNumber: s.seq}
-	if len(s.vPending) > 0 {
-		part.Tracks = append(part.Tracks, &fmp4.PartTrack{
-			ID: mp4meta.VideoTrackID, BaseTime: uint64(s.fragStart), Samples: s.vPending,
-		})
+	var tracks [2]mp4meta.FragTrack
+	n := 0
+	if len(s.vMeta) > 0 {
+		tracks[n] = mp4meta.FragTrack{ID: mp4meta.VideoTrackID, BaseTime: uint64(s.fragStart), Samples: s.vMeta}
+		n++
 	}
-	if len(s.aPending) > 0 {
-		part.Tracks = append(part.Tracks, &fmp4.PartTrack{
-			ID: mp4meta.AudioTrackID, BaseTime: uint64(s.aFragBase), Samples: s.aPending,
-		})
+	if len(s.aMeta) > 0 {
+		tracks[n] = mp4meta.FragTrack{ID: mp4meta.AudioTrackID, BaseTime: uint64(s.aFragBase), Samples: s.aMeta}
+		n++
 		s.aEnd = s.aLastT + int64(s.aLastNom)
 	}
-	s.buf.Reset()
-	if err := part.Marshal(&s.buf); err != nil {
-		return fmt.Errorf("building fragment: %w", err)
-	}
+	s.hdr = mp4meta.AppendFragmentHeader(s.hdr[:0], s.seq, tracks[:n])
 	off := s.bytes
-	if err := s.write(s.buf.Bytes()); err != nil {
+	if err := s.write(s.hdr); err != nil {
 		return err
 	}
-	if len(s.vPending) > 0 && s.fragKey {
+	if len(s.vData) > 0 {
+		if err := s.write(s.vData); err != nil {
+			return err
+		}
+	}
+	if len(s.aData) > 0 {
+		if err := s.write(s.aData); err != nil {
+			return err
+		}
+	}
+	if len(s.vMeta) > 0 && s.fragKey {
 		s.frags = append(s.frags, mp4meta.Fragment{Time: uint64(s.fragStart), MoofOffset: uint64(off)})
 	}
-	clear(s.vPending)
-	clear(s.aPending)
-	s.vPending, s.aPending = s.vPending[:0], s.aPending[:0]
-	s.aLast = nil
+	s.vMeta, s.aMeta = s.vMeta[:0], s.aMeta[:0]
+	s.vData, s.aData = s.vData[:0], s.aData[:0]
 
 	if now := s.now(); now.Sub(s.lastSync) >= SyncInterval {
 		s.lastSync = now
@@ -333,12 +353,12 @@ func (s *segment) close(reason string) (closedSegment, error) {
 		s.abort()
 		return closedSegment{}, err
 	}
-	if s.last != nil {
+	if n := len(s.vMeta); n > 0 {
 		d := s.lastDur
 		if d <= 0 {
 			d = defaultFrameDur
 		}
-		s.last.Duration = uint32(d)
+		s.vMeta[n-1].Duration = uint32(d)
 		s.lastDur = d
 	}
 	if err := s.flush(); err != nil {

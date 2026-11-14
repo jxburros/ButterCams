@@ -213,13 +213,14 @@ func (g *Guardian) start() error {
 		g.exe = exe
 	}
 
-	// Children are created inside this job and die with the guardian.
+	// Every child is put in this job as soon as it has started. The job is
+	// kill-on-close: when the guardian exits for any reason the operating
+	// system closes the handle and terminates whatever is still in the job,
+	// so children never outlive the guardian. The guardian itself stays
+	// outside the job.
 	if job, err := winsvc.NewKillOnCloseJob(); err != nil {
 		g.log.Warn("could not create the job object; children may outlive the service", "error", err.Error())
 	} else {
-		if err := job.AssignSelf(); err != nil {
-			g.log.Warn("could not join the job object", "error", err.Error())
-		}
 		g.job = job
 	}
 

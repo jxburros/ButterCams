@@ -54,11 +54,12 @@ type Proc struct {
 	spec ProcSpec
 	log  *slog.Logger
 	logw func(line []byte) // receives the child's stderr lines
-	job  *winsvc.Job       // guardian-wide job; children are created inside it
+	job  *winsvc.Job       // guardian-wide kill-on-close job the child is put in
 
 	mu       sync.Mutex
 	cmd      *exec.Cmd
 	send     chan any
+	started  bool
 	stopping bool
 	restarts []time.Time
 	killWhy  string
@@ -135,6 +136,9 @@ func (p *Proc) Send(msg any) bool {
 
 // Start launches the supervision loop.
 func (p *Proc) Start() {
+	p.mu.Lock()
+	p.started = true
+	p.mu.Unlock()
 	go p.supervise()
 }
 
@@ -214,7 +218,10 @@ func (p *Proc) runOnce() string {
 		return "cannot start: " + err.Error()
 	}
 	if p.job != nil {
-		p.job.Assign(cmd.Process.Pid) // already inside the job on Windows; tracks the pid elsewhere
+		if err := p.job.Assign(cmd.Process.Pid); err != nil {
+			// The child still stops by itself when its stdin closes.
+			p.log.Warn("could not put the child in the job object", "error", err.Error())
+		}
 	}
 
 	sendCh := make(chan any, 4096)
@@ -394,7 +401,11 @@ func (p *Proc) Stop(grace time.Duration) {
 	p.stopping = true
 	exited := p.exited
 	running := p.cmd != nil
+	started := p.started
 	p.mu.Unlock()
+	if !started {
+		return
+	}
 	if running {
 		p.Send(&ipc.Shutdown{})
 		select {

@@ -115,16 +115,7 @@ func NewTranscoder(srcRate int) (*Transcoder, error) {
 		return nil, fmt.Errorf("sample rate %d Hz cannot be converted to AAC", srcRate)
 	}
 	t := &Transcoder{srcRate: srcRate, up: newUpsampler(OutRate / srcRate)}
-	cutoff := srcRate / 2
-	if cutoff > 20000 {
-		cutoff = 0 // let the encoder choose
-	}
-	enc, err := aac.NewEncoder(aac.EncoderConfig{
-		SampleRate: OutRate,
-		Channels:   1,
-		Bitrate:    OutBitrate,
-		Cutoff:     cutoff,
-	})
+	enc, err := aac.NewEncoder(t.cfg())
 	if err != nil {
 		return nil, err
 	}
@@ -132,12 +123,17 @@ func NewTranscoder(srcRate int) (*Transcoder, error) {
 	return t, nil
 }
 
+// cfg is the encoder configuration. The "fast" quantizer search costs about
+// half the CPU of the default one (0.5% instead of 1.1% of one core per
+// camera) for roughly 2 dB less signal-to-noise on telephone-band audio; with
+// sixty cameras that is the difference between a third and two thirds of a
+// core spent on audio.
 func (t *Transcoder) cfg() aac.EncoderConfig {
 	cutoff := t.srcRate / 2
 	if cutoff > 20000 {
-		cutoff = 0
+		cutoff = 0 // let the encoder choose
 	}
-	return aac.EncoderConfig{SampleRate: OutRate, Channels: 1, Bitrate: OutBitrate, Cutoff: cutoff}
+	return aac.EncoderConfig{SampleRate: OutRate, Channels: 1, Bitrate: OutBitrate, Cutoff: cutoff, Coder: aac.CoderFast}
 }
 
 func (t *Transcoder) restart() error {

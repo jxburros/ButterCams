@@ -660,3 +660,109 @@ func HashFile(path string) (string, int64, error) {
 	}
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
+
+// FragSample describes one sample of a fragment.
+type FragSample struct {
+	Duration  uint32
+	Size      uint32
+	PTSOffset int32
+	NonSync   bool
+}
+
+// FragTrack is the part of a fragment that belongs to one track.
+type FragTrack struct {
+	ID       uint32
+	BaseTime uint64 // decode time of the first sample, in the track's timescale
+	Samples  []FragSample
+}
+
+const sampleFlagNonSync = 1 << 16
+
+// AppendFragmentHeader appends a moof box and the header of the mdat box that
+// follows it. The caller then writes the sample data itself, track after
+// track in the order given, so the (large) video data is never copied into an
+// intermediate buffer. The layout is the one the mediacommon fMP4 writer
+// produces: one traf per track with tfhd (default-base-is-moof), tfdt
+// (version 1) and one trun.
+func AppendFragmentHeader(dst []byte, seq uint32, tracks []FragTrack) []byte {
+	type plan struct {
+		flags     uint32
+		entrySize int
+		trunSize  int
+		dataSize  int
+	}
+	plans := make([]plan, len(tracks))
+	moofSize := 8 + 16
+	dataTotal := 0
+	for i, t := range tracks {
+		p := plan{flags: 0x000001 | 0x000100 | 0x000200, entrySize: 8}
+		for _, s := range t.Samples {
+			if s.NonSync && p.flags&0x000400 == 0 {
+				p.flags |= 0x000400
+				p.entrySize += 4
+			}
+			if s.PTSOffset != 0 && p.flags&0x000800 == 0 {
+				p.flags |= 0x000800
+				p.entrySize += 4
+			}
+			p.dataSize += int(s.Size)
+		}
+		p.trunSize = 8 + 4 + 4 + 4 + len(t.Samples)*p.entrySize
+		plans[i] = p
+		moofSize += 8 + 16 + 20 + p.trunSize
+		dataTotal += p.dataSize
+	}
+
+	be := binary.BigEndian
+	start := len(dst)
+	dst = be.AppendUint32(dst, uint32(moofSize))
+	dst = append(dst, "moof"...)
+	dst = be.AppendUint32(dst, 16)
+	dst = append(dst, "mfhd"...)
+	dst = be.AppendUint32(dst, 0)
+	dst = be.AppendUint32(dst, seq)
+
+	offset := moofSize + 8 // first sample byte, relative to the start of the moof
+	for i, t := range tracks {
+		p := plans[i]
+		dst = be.AppendUint32(dst, uint32(8+16+20+p.trunSize))
+		dst = append(dst, "traf"...)
+
+		dst = be.AppendUint32(dst, 16)
+		dst = append(dst, "tfhd"...)
+		dst = be.AppendUint32(dst, 0x020000) // default-base-is-moof
+		dst = be.AppendUint32(dst, t.ID)
+
+		dst = be.AppendUint32(dst, 20)
+		dst = append(dst, "tfdt"...)
+		dst = be.AppendUint32(dst, 1<<24) // version 1
+		dst = be.AppendUint64(dst, t.BaseTime)
+
+		dst = be.AppendUint32(dst, uint32(p.trunSize))
+		dst = append(dst, "trun"...)
+		dst = be.AppendUint32(dst, 1<<24|p.flags) // version 1: signed composition offsets
+		dst = be.AppendUint32(dst, uint32(len(t.Samples)))
+		dst = be.AppendUint32(dst, uint32(offset))
+		for _, s := range t.Samples {
+			dst = be.AppendUint32(dst, s.Duration)
+			dst = be.AppendUint32(dst, s.Size)
+			if p.flags&0x000400 != 0 {
+				var f uint32
+				if s.NonSync {
+					f = sampleFlagNonSync
+				}
+				dst = be.AppendUint32(dst, f)
+			}
+			if p.flags&0x000800 != 0 {
+				dst = be.AppendUint32(dst, uint32(s.PTSOffset))
+			}
+		}
+		offset += p.dataSize
+	}
+	if len(dst)-start != moofSize {
+		panic("mp4meta: moof size miscalculated") // a programming error, caught by the first test
+	}
+	dst = be.AppendUint32(dst, uint32(8+dataTotal))
+	dst = append(dst, "mdat"...)
+	return dst
+}

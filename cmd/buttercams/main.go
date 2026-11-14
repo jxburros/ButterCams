@@ -199,6 +199,13 @@ func runSetup(args []string) error {
 	return fmt.Errorf("unknown setup command %q", args[0])
 }
 
+// envDefault fills an empty flag from an environment variable.
+func envDefault(flagValue *string, name string) {
+	if *flagValue == "" {
+		*flagValue = os.Getenv(name)
+	}
+}
+
 type destFlags struct {
 	typ, path, user, password, name *string
 	capGB                           *float64
@@ -253,6 +260,10 @@ func setupInit(args []string) error {
 	adminPassword := fs.String("admin-password", "", "password of the first administrator")
 	df := addDestFlags(fs)
 	fs.Parse(args)
+	// The installer hands passwords over in the environment so that they do
+	// not appear on a command line.
+	envDefault(adminPassword, "BUTTERCAMS_ADMIN_PASSWORD")
+	envDefault(df.password, "BUTTERCAMS_DEST_PASSWORD")
 
 	root := winsvc.ResolveDataRoot(*dataRootFlag)
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -329,6 +340,7 @@ func setupInstallService(args []string) error {
 	dataRootFlag := fs.String("data-root", "", "data root")
 	noStart := fs.Bool("no-start", false, "register the service without starting it")
 	fs.Parse(args)
+	envDefault(password, "BUTTERCAMS_SERVICE_PASSWORD")
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -427,6 +439,7 @@ func setupTestDestination(args []string) error {
 	fs := flag.NewFlagSet("setup test-destination", flag.ExitOnError)
 	df := addDestFlags(fs)
 	fs.Parse(args)
+	envDefault(df.password, "BUTTERCAMS_DEST_PASSWORD")
 	dest, password, ok := df.destination()
 	if !ok {
 		return errors.New("give the destination with --dest-path")

@@ -151,7 +151,7 @@ func TestSegmentWriterFragmentsAndNames(t *testing.T) {
 	n := 0
 	for i := 0; i < 150; i++ {
 		key := i == 0 || i == 15
-		u := sample{video: true, pts: 1000 + int64(i)*frame, dts: 1000 + int64(i)*frame, key: key, data: []byte{0, 0, 0, 1, 0x65}}
+		u := sample{video: true, pts: 1000 + int64(i)*frame, dts: 1000 + int64(i)*frame, key: key, nalus: [][]byte{{0x65}}}
 		if err := seg.writeVideo(u); err != nil {
 			t.Fatal(err)
 		}
@@ -217,7 +217,7 @@ func TestSegmentWriterSurvivesTimestampJumps(t *testing.T) {
 	}
 	dts := []int64{0, 6000, 12000, 5_000_000_000, 5_000_006_000, 100, 6100}
 	for i, d := range dts {
-		if err := seg.writeVideo(sample{video: true, pts: d, dts: d, key: i == 0, data: []byte{1}}); err != nil {
+		if err := seg.writeVideo(sample{video: true, pts: d, dts: d, key: i == 0, nalus: [][]byte{{0x65}}}); err != nil {
 			t.Fatal(err)
 		}
 	}

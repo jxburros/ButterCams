@@ -1078,6 +1078,19 @@ func (s *Server) handleSystemPut(w http.ResponseWriter, r *http.Request) {
 		s.writeFail(w, err)
 		return
 	}
+	// Zero means "not set" inside the configuration, so explicit zeros are
+	// rejected here instead of silently becoming the defaults.
+	early := &config.ValidationError{}
+	if in.Server != nil && in.Server.Port != nil && (*in.Server.Port < 1 || *in.Server.Port > 65535) {
+		early.Fields = append(early.Fields, config.FieldError{Field: "server.port", Message: "Port must be a number between 1 and 65535."})
+	}
+	if in.Logging != nil && in.Logging.RetentionDays != nil && (*in.Logging.RetentionDays < 1 || *in.Logging.RetentionDays > 365) {
+		early.Fields = append(early.Fields, config.FieldError{Field: "logging.retentionDays", Message: "Log retention must be between 1 and 365 days."})
+	}
+	if len(early.Fields) > 0 {
+		s.writeFail(w, early)
+		return
+	}
 	_, err := s.backend.UpdateConfig(func(c *config.Config) error {
 		if in.Server != nil {
 			if in.Server.ListenAddress != nil {

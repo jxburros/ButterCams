@@ -227,11 +227,7 @@ func (p *processor) pushVideo(pkt *Packet) {
 		pts = dts
 	}
 
-	data, err := h264.AVCC(au).Marshal() // length-prefixed NAL units, bytes untouched
-	if err != nil {
-		return
-	}
-	p.out = append(p.out, sample{video: true, pts: pts, dts: dts, key: key, data: data, recv: pkt.Recv})
+	p.out = append(p.out, sample{video: true, pts: pts, dts: dts, key: key, nalus: au, recv: pkt.Recv})
 }
 
 // extractDTS derives the decode time from the picture order. Streams without

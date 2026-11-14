@@ -29,6 +29,9 @@ import (
 var testExe string
 
 func TestMain(m *testing.M) {
+	if os.Getenv("BUTTERCAMS_TEST_EXIT") == "1" {
+		os.Exit(3) // this process is the crashing child of the supervisor test
+	}
 	dir, err := os.MkdirTemp("", "buttercams-test-bin")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

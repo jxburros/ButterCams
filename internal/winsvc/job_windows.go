@@ -34,13 +34,6 @@ func NewKillOnCloseJob() (*Job, error) {
 	return &Job{h: h}, nil
 }
 
-// AssignSelf puts the calling process in the job. Children started afterwards
-// are created inside the job, so there is no window in which a child could
-// escape it.
-func (j *Job) AssignSelf() error {
-	return windows.AssignProcessToJobObject(j.h, windows.CurrentProcess())
-}
-
 // Assign puts a running process in the job.
 func (j *Job) Assign(pid int) error {
 	p, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(pid))
@@ -56,7 +49,8 @@ func (j *Job) Terminate() error {
 	return windows.TerminateJobObject(j.h, 1)
 }
 
-// Close releases the handle. With kill-on-close this terminates the members.
+// Close releases the handle. With kill-on-close this terminates the members
+// that are still running.
 func (j *Job) Close() {
 	if j.h != 0 {
 		windows.CloseHandle(j.h)
