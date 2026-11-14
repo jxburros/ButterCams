@@ -1,0 +1,16 @@
+# build output
+/buttercams
+/buttercams.exe
+/camsim
+/camsim.exe
+/dist/
+*.test
+
+# web UI: dependencies and build output (the build is embedded at compile time)
+/web/node_modules/
+/web/dist/*
+!/web/dist/README.txt
+
+# local data roots used during development
+/data/
+/.buttercams/
