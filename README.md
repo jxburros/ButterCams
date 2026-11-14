@@ -11,14 +11,18 @@ PCs on the network can open.
 - **Version 1 – Core Recorder** is implemented here: recording, hourly files
   with gap-free rollover, audio, storage destinations and retention,
   self-recovery, health monitoring, the settings page and API, the installer.
-- Later versions (alerts and motion, AI detection, live view) are specified
-  but not built.
+- **Version 2 – Live View and Timeline Playback** is next: specified in
+  section 16 of the spec, with the build plan in
+  [docs/V2_PLAN.md](docs/V2_PLAN.md). Not built yet.
+- Versions 3 and 4 (alerts, clip export and motion; AI detection) are
+  specified but not built.
 
 ## Documents
 
 | | |
 | --- | --- |
 | [BUTTERCAMS_SPEC.md](BUTTERCAMS_SPEC.md) | The build specification (source of truth) |
+| [docs/V2_PLAN.md](docs/V2_PLAN.md) | How the next version (live view and timeline playback) is to be built |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Installing, configuring and troubleshooting |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | Choices made during the build, and what has not been verified yet |
 | [docs/API.md](docs/API.md) | REST API |

@@ -13,6 +13,8 @@ Then read:
   build them).
 - `docs/API.md` – the REST contract. Existing endpoints never change.
 - `docs/OPERATIONS.md` – the administrator's guide; keep it true.
+- `docs/V2_PLAN.md` – the build plan for the next version, live view and
+  timeline playback (spec section 16): order of work, code changes, tests.
 
 ## Layout
 
@@ -52,5 +54,7 @@ go test ./...                                # unit + integration tests (about t
   worker.
 - Retention and cleanup may only touch files that are in the index and whose
   names match `internal/naming`.
-- Later versions (spec sections 16–18) are built on the hooks of section 15.
-  Do not start them without being asked.
+- v2 (spec section 16) is the next phase; build it in the order of
+  `docs/V2_PLAN.md`. Its rules for protecting the recorder are in 16.9.
+- v3 and v4 (spec sections 17–18) are built on the hooks of section 15 and
+  on v2. Do not start them without being asked.
