@@ -49,6 +49,7 @@ type destState struct {
 	active    map[int64]bool // segment ids being copied
 	cancelled map[int64]bool // copies in flight that were withdrawn
 	failures  int            // consecutive failed attempts
+	failSeq   uint64         // number of failures counted so far (see copyOne)
 	nextTry   time.Time
 	connected bool
 	probing   bool
@@ -311,12 +312,15 @@ func (m *Mover) dispatch() {
 			m.running++
 			progress = true
 			m.wg.Add(1)
-			go m.copyOne(st, job)
+			go m.copyOne(st, job, st.failSeq)
 		}
 	}
 }
 
-func (m *Mover) copyOne(st *destState, job *ipc.CopyJob) {
+// copyOne runs one copy. seq is the destination's failSeq when the copy was
+// handed out: it tells a copy that fails whether another copy from the same
+// batch has already reported the outage.
+func (m *Mover) copyOne(st *destState, job *ipc.CopyJob, seq uint64) {
 	defer m.wg.Done()
 	m.mu.Lock()
 	dest := st.cfg
@@ -359,15 +363,23 @@ func (m *Mover) copyOne(st *destState, job *ipc.CopyJob) {
 	case errors.Is(err, errSourceMissing):
 		res.Error, res.SourceMissing = err.Error(), true
 	default:
-		st.failures++
 		st.connected = false
-		delay := m.retry(st.failures)
-		st.nextTry = time.Now().Add(delay)
+		// Copies that were running together when the destination went away
+		// all fail at once. That is one failed attempt, not several: only
+		// the first of them moves the retry schedule on.
+		if st.failSeq == seq || st.failures == 0 {
+			st.failures++
+			st.failSeq++
+			st.nextTry = time.Now().Add(m.retry(st.failures))
+		}
 		res.Error = config.Redact(err.Error())
 		res.Attempt = st.failures
-		res.NextRetrySec = int(delay / time.Second)
+		if wait := time.Until(st.nextTry); wait > 0 {
+			res.NextRetrySec = int((wait + time.Second/2) / time.Second)
+		}
 		// Keep the job for the retry, oldest first.
-		st.queue = append([]*ipc.CopyJob{job}, st.queue...)
+		st.queue = append(st.queue, job)
+		sort.SliceStable(st.queue, func(i, j int) bool { return st.queue[i].Start.Before(st.queue[j].Start.Time) })
 	}
 	stillKnown := m.dests[job.DestinationID] == st
 	m.pokeLocked()

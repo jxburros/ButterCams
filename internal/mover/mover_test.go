@@ -273,6 +273,69 @@ func TestOfflineDestinationRetriesThenCopiesBacklog(t *testing.T) {
 	}
 }
 
+// Copies that are running together when a destination goes away fail
+// together. That is one failed attempt: the retry schedule must not skip
+// ahead by however many copies happened to be in flight (spec 7.3).
+func TestSimultaneousFailuresCountOnce(t *testing.T) {
+	staging := t.TempDir()
+	blocker := filepath.Join(t.TempDir(), "share")
+	os.WriteFile(blocker, []byte("a file where the folder should be"), 0o644) // makes MkdirAll fail
+	dest := localDest("nas", filepath.Join(blocker, "recordings"))
+
+	var mu sync.Mutex
+	var asked []int
+	h := startMover(t, func(m *Mover) {
+		m.retry = func(n int) time.Duration {
+			mu.Lock()
+			asked = append(asked, n)
+			mu.Unlock()
+			return time.Hour
+		}
+	})
+	// Queue three copies while the destination is switched off, then switch
+	// it on: all three start in the same pass and fail side by side.
+	off := dest
+	off.Enabled = false
+	h.send(&ipc.Destinations{Staging: config.Staging{Path: staging}, Destinations: []config.Destination{off}})
+	for i := 0; i < 3; i++ {
+		job := stagedFile(t, staging, int64(i+1), "cam", i, strings.Repeat("x", 1000+i))
+		job.DestinationID = "nas"
+		job.Start = ipc.T(hour.Add(time.Duration(i) * time.Hour))
+		h.send(job)
+	}
+	h.send(&ipc.Destinations{Staging: config.Staging{Path: staging}, Destinations: []config.Destination{dest}})
+
+	deadline := time.Now().Add(10 * time.Second)
+	for len(h.results()) < 3 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	res := h.results()
+	if len(res) != 3 {
+		t.Fatalf("%d failure reports, want 3", len(res))
+	}
+	for _, r := range res {
+		if r.OK || r.Attempt != 1 || r.NextRetrySec < 3590 || r.NextRetrySec > 3600 {
+			t.Fatalf("report %+v; want a first failed attempt with the first retry wait", r)
+		}
+	}
+	mu.Lock()
+	got := append([]int(nil), asked...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != 1 {
+		t.Fatalf("retry schedule asked for failures %v; want just the first", got)
+	}
+	// The backlog is kept, oldest first, for the retry.
+	h.m.mu.Lock()
+	var order []int64
+	for _, j := range h.m.dests["nas"].queue {
+		order = append(order, j.SegmentID)
+	}
+	h.m.mu.Unlock()
+	if len(order) != 3 || order[0] != 1 || order[1] != 2 || order[2] != 3 {
+		t.Fatalf("queue after the failures: %v; want 1 2 3", order)
+	}
+}
+
 func TestRetrySchedule(t *testing.T) {
 	want := []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute, 5 * time.Minute, 10 * time.Minute, 10 * time.Minute, 10 * time.Minute}
 	for i, w := range want {

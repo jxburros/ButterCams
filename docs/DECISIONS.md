@@ -234,6 +234,14 @@ The database has the tables and indexes of spec 10.5 plus one more index,
 `idx_copies_destination_state`, which keeps the per-destination usage, queue
 and retention queries fast once there are hundreds of thousands of rows.
 
+### 34. Copies that fail together count as one failed attempt
+
+Up to four copies run at once. When a destination goes away they all fail
+within moments of each other. That is one failed attempt for the retry
+schedule of spec 7.3 (30 s, 1, 2, 5, 10 min), not four: otherwise a short
+outage would jump straight to the five-minute wait. Each of those copies
+still reports its failure, with the same attempt number.
+
 ## Guardian
 
 ### 21. Children are put in the Job Object right after they start
