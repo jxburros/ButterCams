@@ -8,6 +8,7 @@ import { CamerasPage } from './pages/CamerasPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DestinationsPage } from './pages/DestinationsPage';
 import { EventsPage } from './pages/EventsPage';
+import { LivePage } from './pages/LivePage';
 import { LoginPage } from './pages/LoginPage';
 import { RecordingsPage } from './pages/RecordingsPage';
 import { SystemPage } from './pages/SystemPage';
@@ -67,6 +68,7 @@ export function App() {
               }
             >
               <Route index element={<DashboardPage />} />
+              <Route path="live" element={<LivePage />} />
               <Route path="cameras" element={<CamerasPage />} />
               <Route path="destinations" element={<DestinationsPage />} />
               <Route path="recordings" element={<RecordingsPage />} />

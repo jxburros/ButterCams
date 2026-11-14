@@ -6,6 +6,7 @@ import { ApiError, errorMessage } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import { Alert } from '../components/Alert';
 import { TextField } from '../components/Fields';
+import { BrandMark } from '../components/Icon';
 import type { FieldErrors } from '../lib/forms';
 import { hasErrors } from '../lib/forms';
 import { usePageTitle } from '../lib/hooks';
@@ -59,32 +60,50 @@ export function LoginPage() {
 
   return (
     <main className="login">
-      <form className="login-card" onSubmit={(event) => void submit(event)} noValidate>
-        <h1>ButterCams</h1>
-        <p className="muted">Sign in to see recorder status and settings.</p>
-        {failure ? <Alert kind="error">{failure}</Alert> : null}
-        <TextField
-          label="User name"
-          value={username}
-          onChange={setUsername}
-          error={errors.username}
-          autoComplete="username"
-          autoCapitalize="none"
-          spellCheck={false}
-          autoFocus
-        />
-        <TextField
-          label="Password"
-          type="password"
-          value={password}
-          onChange={setPassword}
-          error={errors.password}
-          autoComplete="current-password"
-        />
-        <button type="submit" className="button button-primary" disabled={busy || status === 'loading'}>
-          {busy ? 'Signing in…' : 'Sign in'}
-        </button>
-      </form>
+      <section className="login-brand" aria-label="ButterCams">
+        <div className="brand">
+          <BrandMark size={44} />
+          <span>ButterCams</span>
+        </div>
+        <p className="login-slogan">
+          Every camera.
+          <br />
+          Every hour.
+          <br />
+          Never stops.
+        </p>
+        <span className="eyebrow" style={{ color: 'var(--ink)' }}>
+          {window.location.host}
+        </span>
+      </section>
+      <div className="login-side">
+        <form className="login-card" onSubmit={(event) => void submit(event)} noValidate>
+          <h1>Sign in</h1>
+          <p className="muted">See recorder status, live cameras and settings.</p>
+          {failure ? <Alert kind="error">{failure}</Alert> : null}
+          <TextField
+            label="User name"
+            value={username}
+            onChange={setUsername}
+            error={errors.username}
+            autoComplete="username"
+            autoCapitalize="none"
+            spellCheck={false}
+            autoFocus
+          />
+          <TextField
+            label="Password"
+            type="password"
+            value={password}
+            onChange={setPassword}
+            error={errors.password}
+            autoComplete="current-password"
+          />
+          <button type="submit" className="button button-primary" disabled={busy || status === 'loading'}>
+            {busy ? 'Signing in…' : 'Sign in'}
+          </button>
+        </form>
+      </div>
     </main>
   );
 }

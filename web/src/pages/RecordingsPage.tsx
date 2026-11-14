@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
+import type { CSSProperties } from 'react';
 import { api, errorMessage } from '../api/client';
 import type { Segment } from '../api/types';
 import { Alert } from '../components/Alert';
 import { Badge, CopyStateBadge } from '../components/Badge';
 import { SelectField, TextField } from '../components/Fields';
+import { Icon } from '../components/Icon';
 import { EMPTY, formatBytes, formatCodec, formatDateTime, humanize, todayLocal } from '../lib/format';
 import { useLoad, usePageTitle } from '../lib/hooks';
 
@@ -28,6 +30,62 @@ function hasCopy(segment: Segment): boolean {
 
 function isDate(text: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(text) && !Number.isNaN(Date.parse(`${text}T00:00:00`));
+}
+
+type HourMark = 'none' | 'full' | 'gap' | 'now';
+
+/** One mark per local hour of the chosen day: recorded, recorded with a gap, being written, or nothing. */
+function hourMarks(segments: Segment[], date: string): HourMark[] {
+  const marks: HourMark[] = Array.from({ length: 24 }, () => 'none');
+  const dayStart = new Date(`${date}T00:00:00`).getTime();
+  if (Number.isNaN(dayStart)) return marks;
+  for (const segment of segments) {
+    const start = Date.parse(segment.start);
+    const end = segment.end === null ? Date.now() : Date.parse(segment.end);
+    if (Number.isNaN(start) || Number.isNaN(end)) continue;
+    const first = Math.max(0, Math.floor((start - dayStart) / 3_600_000));
+    const last = Math.min(23, Math.floor((Math.max(start, end - 1) - dayStart) / 3_600_000));
+    for (let hour = first; hour <= last; hour++) {
+      if (marks[hour] === 'none') marks[hour] = 'full';
+    }
+    if (segment.gapBefore && first <= 23 && marks[first] !== 'now') marks[first] = 'gap';
+    if (segment.end === null && last >= 0) marks[last] = 'now';
+  }
+  return marks;
+}
+
+function HourStrip({ segments, date }: { segments: Segment[]; date: string }) {
+  const marks = hourMarks(segments, date);
+  const recorded = marks.filter((mark) => mark !== 'none').length;
+  const gaps = marks.filter((mark) => mark === 'gap').length;
+  return (
+    <section className="hour-strip" aria-labelledby="day-heading">
+      <div className="hour-strip-head">
+        <h2 id="day-heading">{new Date(`${date}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}</h2>
+        <ul className="legend">
+          <li>Recorded</li>
+          <li style={{ '--key': 'var(--orange)' } as CSSProperties}>Starts after a gap</li>
+          <li style={{ '--key': 'var(--butter)' } as CSSProperties}>Recording now</li>
+        </ul>
+      </div>
+      <div
+        className="hours"
+        role="img"
+        aria-label={`${recorded} of 24 hours have recordings${gaps > 0 ? `, ${gaps} of them after a gap` : ''}.`}
+      >
+        {marks.map((mark, hour) => (
+          <div key={hour} className={mark === 'none' ? 'hour' : `hour hour-${mark}`} title={`${String(hour).padStart(2, '0')}:00`} />
+        ))}
+      </div>
+      <div className="hour-axis" aria-hidden="true">
+        <span>00:00</span>
+        <span>06:00</span>
+        <span>12:00</span>
+        <span>18:00</span>
+        <span>24:00</span>
+      </div>
+    </section>
+  );
 }
 
 export function RecordingsPage() {
@@ -77,7 +135,10 @@ export function RecordingsPage() {
   return (
     <>
       <div className="page-header">
-        <h1>Recordings</h1>
+        <div className="page-title">
+          <p className="eyebrow">One MP4 file per hour · plays in VLC</p>
+          <h1>Recordings</h1>
+        </div>
       </div>
 
       {cameras.error ? <Alert kind="error">The camera list could not be loaded: {cameras.error}</Alert> : null}
@@ -97,6 +158,10 @@ export function RecordingsPage() {
       </section>
 
       {failure ? <Alert kind="error">Recordings could not be loaded: {failure}</Alert> : null}
+
+      {cameraId !== '' && !loading && segments !== null && segments.length > 0 && dateError === undefined ? (
+        <HourStrip segments={segments} date={date} />
+      ) : null}
 
       <section className="panel" aria-labelledby="files-heading">
         <h2 id="files-heading">Hour files</h2>
@@ -153,7 +218,8 @@ export function RecordingsPage() {
                         {segment.audioCodec ? ` + ${formatCodec(segment.audioCodec)}` : ', no audio'}
                       </div>
                       {hasCopy(segment) ? (
-                        <a href={api.segmentDownloadUrl(segment.id)} download={segment.fileName}>
+                        <a className="button button-small" href={api.segmentDownloadUrl(segment.id)} download={segment.fileName}>
+                          <Icon name="download" size={16} />
                           Download
                         </a>
                       ) : (

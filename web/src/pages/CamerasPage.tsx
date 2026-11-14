@@ -3,6 +3,7 @@ import { api, errorMessage } from '../api/client';
 import type { Camera } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Alert } from '../components/Alert';
+import { Icon } from '../components/Icon';
 import { CameraStateBadge } from '../components/Badge';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { CheckboxField } from '../components/Fields';
@@ -93,7 +94,10 @@ export function CamerasPage() {
     return (
       <>
         <div className="page-header">
+          <div className="page-title">
+          <p className="eyebrow">Camera setup</p>
           <h1>Cameras</h1>
+        </div>
         </div>
         {destinations.error ? (
           <Alert kind="error">The destination list could not be loaded: {destinations.error}</Alert>
@@ -119,7 +123,10 @@ export function CamerasPage() {
     return (
       <>
         <div className="page-header">
+          <div className="page-title">
+          <p className="eyebrow">Camera setup</p>
           <h1>Cameras</h1>
+        </div>
         </div>
         <CameraImport onImported={() => void cameras.reload()} onClose={() => open({ kind: 'list' })} />
       </>
@@ -129,10 +136,14 @@ export function CamerasPage() {
   return (
     <>
       <div className="page-header">
-        <h1>Cameras</h1>
+        <div className="page-title">
+          <p className="eyebrow">Camera setup</p>
+          <h1>Cameras</h1>
+        </div>
         {isAdmin ? (
           <div className="button-row">
             <button type="button" className="button button-primary" onClick={() => open({ kind: 'add' })}>
+              <Icon name="plus" size={18} />
               Add camera
             </button>
             <button type="button" className="button" onClick={() => open({ kind: 'import' })}>

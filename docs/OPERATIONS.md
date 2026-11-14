@@ -120,6 +120,12 @@ Camera states:
 | Error | A setting is wrong; retried every 60 s | "Authentication failed": fix the user name/password. "Camera sends MJPEG…": change the camera's codec |
 | Disabled | Switched off in ButterCams | – |
 
+**Live** shows every camera as a tile in a grid of 1, 4, 9 or 16, with its
+recording state (refreshed every 5 seconds). Click a tile to see one camera.
+**New view** saves a named group of cameras, for example Entrances; saved
+views are kept in the browser you made them in. Live video itself is not in
+this version: the tiles show state only.
+
 **Events** keeps every incident for 90 days: stalls, restarts, deletions,
 status changes, and who changed what.
 
