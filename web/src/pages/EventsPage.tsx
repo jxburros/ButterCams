@@ -4,6 +4,8 @@ import type { EventRow, EventsQuery, Severity } from '../api/types';
 import { Alert } from '../components/Alert';
 import { SeverityBadge } from '../components/Badge';
 import { SelectField, TextField } from '../components/Fields';
+import { Icon } from '../components/Icon';
+import { Segmented } from '../components/PageHeader';
 import { EMPTY, formatDateTime, humanize } from '../lib/format';
 import { useLoad, usePageTitle } from '../lib/hooks';
 
@@ -118,7 +120,10 @@ export function EventsPage() {
   return (
     <>
       <div className="page-header">
-        <h1>Events</h1>
+        <div className="page-title">
+          <p className="eyebrow">Everything the service noticed</p>
+          <h1>Events</h1>
+        </div>
         <div className="button-row">
           <button
             type="button"
@@ -126,6 +131,7 @@ export function EventsPage() {
             disabled={loading || sinceInvalid}
             onClick={() => void loadFirstPage(filters)}
           >
+            <Icon name="refresh" size={18} />
             Refresh
           </button>
         </div>
@@ -133,16 +139,20 @@ export function EventsPage() {
 
       <section className="panel" aria-label="Filters">
         <div className="filter-row">
-          <SelectField
-            label="Severity"
-            value={filters.severity}
-            onChange={(severity) => setFilters((current) => ({ ...current, severity: toSeverity(severity) }))}
-          >
-            <option value="">All</option>
-            <option value="info">Info</option>
-            <option value="warning">Warning</option>
-            <option value="critical">Critical</option>
-          </SelectField>
+          <div className="seg-field">
+            <span className="seg-field-label">Severity</span>
+            <Segmented<'' | Severity>
+              label="Severity"
+              value={filters.severity}
+              onChange={(severity) => setFilters((current) => ({ ...current, severity: toSeverity(severity) }))}
+              options={[
+                { value: '', label: 'All' },
+                { value: 'info', label: 'Info' },
+                { value: 'warning', label: 'Warning' },
+                { value: 'critical', label: 'Critical' },
+              ]}
+            />
+          </div>
           <SelectField
             label="Camera"
             value={filters.camera}
@@ -207,7 +217,7 @@ export function EventsPage() {
                       <td>
                         <SeverityBadge severity={event.severity} />
                       </td>
-                      <td className="mono">{event.source}</td>
+                      <td className="mono-cell">{event.source}</td>
                       <td>{humanize(event.type)}</td>
                       <td>{event.cameraId ? cameraName(event.cameraId) : EMPTY}</td>
                       <td className="wrap-anywhere">{eventMessage(event)}</td>

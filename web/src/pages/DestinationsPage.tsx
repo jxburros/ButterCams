@@ -3,6 +3,7 @@ import { api, errorMessage } from '../api/client';
 import type { Destination } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Alert } from '../components/Alert';
+import { Icon } from '../components/Icon';
 import { DestinationStateBadge } from '../components/Badge';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { StagingSummary } from '../components/StagingSummary';
@@ -58,7 +59,10 @@ export function DestinationsPage() {
     return (
       <>
         <div className="page-header">
+          <div className="page-title">
+          <p className="eyebrow">Where recordings are kept</p>
           <h1>Destinations</h1>
+        </div>
         </div>
         <DestinationForm
           key={editing?.id ?? 'new'}
@@ -77,10 +81,14 @@ export function DestinationsPage() {
   return (
     <>
       <div className="page-header">
-        <h1>Destinations</h1>
+        <div className="page-title">
+          <p className="eyebrow">Where recordings are kept</p>
+          <h1>Destinations</h1>
+        </div>
         {isAdmin ? (
           <div className="button-row">
             <button type="button" className="button button-primary" onClick={() => open({ kind: 'add' })}>
+              <Icon name="plus" size={18} />
               Add destination
             </button>
           </div>

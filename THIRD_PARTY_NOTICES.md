@@ -30,6 +30,7 @@ full license texts are in the module sources, which `go mod download` and
 | --- | --- |
 | react, react-dom | MIT |
 | react-router, react-router-dom | MIT |
+| @fontsource/bricolage-grotesque, @fontsource/instrument-sans, @fontsource/martian-mono (font files bundled into the page) | Fonts: SIL Open Font License 1.1; packaging: MIT |
 
 ## About go-aac (LGPL)
 

@@ -315,6 +315,25 @@ new address cannot be used (port taken), the previous one is restored and a
 Critical event is recorded. A new certificate takes effect immediately
 without restarting the listener.
 
+### 28a. Look of the settings page
+
+Black, white and butter yellow; orange, red and blue only mark states, and
+every state also has a text label. Headings use Bricolage Grotesque, text
+Instrument Sans and paths and numbers Martian Mono (all SIL OFL). The fonts
+come from the `@fontsource` npm packages and are bundled into `web/dist`, so
+the page loads nothing from the internet (spec section 3).
+
+### 28b. Live page before live video
+
+The owner asked for the Live page now. It shows the spec 18.1 grid (layouts
+1, 4, 9 and 16, saved camera views, click a tile for one camera), but without
+video: v4's go2rtc engine and the local restream do not exist yet, so each
+tile shows the camera's recording state from `GET /cameras`, refreshed every
+5 s, and says plainly that live video is not in this version. Saved views are
+kept in the browser's `localStorage` (one list per browser), so v1 needs no
+change to `config.json` or the API. When v4 adds video, the views can move to
+the server and the tiles can play the sub stream.
+
 ## Installer and tooling
 
 ### 29. Inno Setup instead of WiX
