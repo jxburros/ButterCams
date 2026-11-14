@@ -455,6 +455,33 @@ on the server, which rule 2 and the no-CGO rule exclude. The server cuts one
 keyframe out of the file as a tiny complete MP4; the browser decodes it and
 caches the picture.
 
+### 41. Saved views: each user's own, plus shared ones from Admins
+
+The owner's answer. A user's own views are stored with the account in
+`users.json`; shared views are stored in `config.json` (`live.views`), so a
+configuration export carries the shared ones and no personal ones. "Share"
+copies an Admin's view into the shared list; the copies are independent
+afterwards.
+
+### 42. The hourly rollover does not freeze live view
+
+The owner asked to avoid the freeze if possible. The worker's restream serves
+each RTSP session as its own stream and reports when a camera's second
+session starts; the media process connects to both and switches viewers at
+the new session's first keyframe. The switch logic is in the media process,
+so the worker gains one message and a session filter, nothing that looks at
+video. When the notice is missing, live view resumes at the next keyframe as
+it would after any reconnect.
+
+### 43. Browsers, phones and `hvc1`
+
+The owner watches in Chrome and Safari, on Windows, iPhone and Android. Those
+are the acceptance targets; Edge and Firefox are expected to work. iPhones
+need iOS 17.1 (the first with `ManagedMediaSource`); older ones get a message
+(decision 36). Because Safari plays H.265 only with the `hvc1` sample entry,
+H.265 recordings are written that way from v2 on. Phone-size screens show at
+most four live tiles per page.
+
 ## Not verified here
 
 The build environment was Linux without a Windows machine. These parts are

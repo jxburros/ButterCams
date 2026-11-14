@@ -20,7 +20,7 @@ risks. Nothing here is built yet.
 ```
 
 Four choices carry the design. Their reasons are in `docs/DECISIONS.md`
-(decisions 35–40).
+(decisions 35–43).
 
 | Choice | In one line |
 | --- | --- |
@@ -93,20 +93,23 @@ milestone.
    the sub stream too; `CameraTestResult` gains `sub`. A change to
    `subStreamPath` must not count in `recorderChanged`: it never restarts a
    recording.
-6. **Per-user camera limits** (`internal/api/auth.go`, `users.json`): the
-   `cameras` field; one function `allowed(user, cameraID)` used by every
+6. **Per-user camera limits and views** (`internal/api/auth.go`,
+   `users.json`): the `cameras` and `views` fields; one function `allowed(user, cameraID)` used by every
    handler that names a camera, and a filter for lists, events and the SSE
    stream. Write the test first: a table of every `/api/v1` route against a
    restricted viewer, which fails for any route added later without a rule.
 7. **Simulator** (`test/simulator`): a second, low-resolution path per camera
    (`/cam1/sub`), an H.265 sub stream switch, and a switch that refuses the
    sub stream.
-8. **Check the H.265 sample entry.** Record an H.265 file and read its sample
-   entry type. Safari only plays `hvc1`; Chrome and Edge play both. If the
-   recorder writes `hev1`, the live muxer (which builds its own header) uses
-   `hvc1` regardless; for recorded files, decide whether to change the
-   recorder's tag (then re-verify VLC and Windows Media Player) or to accept
-   that H.265 recordings do not play in Safari. Record the decision.
+8. **H.265 sample entry is `hvc1`.** iPhones are a target and Safari only
+   plays `hvc1`. Record an H.265 file and read its sample entry type. If the
+   recorder writes `hev1`, change it to `hvc1` (`videoParams.mp4Codec` /
+   the initialization segment), keep all parameter sets in the header, and
+   re-verify VLC, Windows Media Player and ffmpeg decoding. This is the one
+   deliberate change to what the recorder writes; it goes in early so files
+   recorded during v2 development already play everywhere. Files recorded
+   before it with `hev1` stay as they are and offer the download in Safari.
+   The live muxer builds its own header and uses `hvc1` regardless.
 
 Exit: all v1 tests green on Linux and Windows; a v1 `config.json` loads and
 is rewritten as schema 2; a restricted viewer is fenced in.
@@ -156,9 +159,19 @@ is rewritten as schema 2; a restricted viewer is fenced in.
      Page Visibility), reopen when it is.
    - Check `isTypeSupported(mime)` on `init`; if not supported, say so in the
      tile.
-8. **Saved views on the server**: `GET`/`PUT /live/views`; the page offers
-   once to upload views found in `localStorage` (decision 28b).
-9. **Dashboard**: a row for the media process (state, viewers, sources).
+8. **Saved views on the server**: `GET /live/views` returns `shared` (from
+   `config.json`) and `mine` (from `users.json`); `PUT /live/views/mine` for
+   everyone, `PUT /live/views/shared` for Admins. The view picker lists
+   "My views" and "Shared views"; an Admin's view menu has "Share with
+   everyone" (copies it to the shared list). The page offers once to upload
+   views found in `localStorage` (decision 28b) into the user's own.
+9. **Phones** (`LivePage.tsx`, `styles.css`): `<video muted playsinline
+   autoplay>`; `ManagedMediaSource` with `disableRemotePlayback` and its
+   `startstreaming`/`endstreaming` events on iPhone; at most 4 tiles per page
+   below 700 px width, swipe between pages; single view rotates to
+   landscape full screen. Measure how many inline players an iPhone and a
+   mid-range Android phone sustain before fixing the cap of 4.
+10. **Dashboard**: a row for the media process (state, viewers, sources).
 
 Tests:
 
@@ -170,6 +183,8 @@ Tests:
   path), and the source closes 30 s after the last viewer.
 - Go: kill the media process during a stream; a new stream works within 10 s;
   the recorder's files in the same test have no gap.
+- Go: user A's views are not returned to user B; a shared view is filtered
+  by the reader's camera limits; a viewer cannot write shared views.
 - Browser (Playwright, see section 4): 16 tiles play; `currentTime` advances
   on each; latency (wall clock burnt into the simulator's picture, or the
   buffered end against the clock) stays under 1 s for 10 minutes.
@@ -245,13 +260,26 @@ small and review it against spec 16.9 line by line.
 
 1. **`internal/restream`**: a gortsplib `Server` on `127.0.0.1:0`, started
    by the worker when the guardian sends `restream` with a token. Path
-   `/<camera-id>`. On `DESCRIBE`, the mount is created from the camera's
-   current session description; a camera that is not recording answers 404.
-   On `PLAY`, `Camera.Subscribe("restream", 1024)` and a pump goroutine copies
-   from the reader's channel to the server stream. On the last client's
-   teardown: `Unsubscribe`. A second client for the same camera: 503.
-2. The pump watches `Packet.Session`: when it changes, it closes the mount.
-   The media process sees the stream end and connects again.
+   `/<camera-id>`. One **mount per RTSP session** of the camera. On
+   `DESCRIBE`, a mount is created from the description of the camera's
+   newest session; a camera that is not recording answers 404. On the first
+   `PLAY`, `Camera.Subscribe("restream", 1024)` and one pump goroutine copies
+   from the reader's channel to the mount whose session matches
+   `Packet.Session` (both sessions already publish to the fan-out during the
+   rollover, tagged). A packet of a session with no client is skipped. On
+   the last client's teardown: `Unsubscribe`. A second client for the same
+   session: 503. A mount is closed when its session ends.
+2. **Rollover without a freeze.** When a camera's second session starts
+   playing (`nextDialed`), the worker sends `restream_session`; the guardian
+   forwards it to the media process as `source_changed`. The hub opens a
+   second client on the same path (it now describes the new session), feeds
+   it to a second `stream.processor`, and at that session's first keyframe
+   moves the source's viewers over: a new `init` message only if the
+   parameters differ, and the live muxer's own timeline continues, so the
+   browser sees one unbroken stream. Then it closes the old client. The
+   worker does no switching and inspects no video. Fallback: if the old
+   stream ends first, the hub reconnects and viewers resume at the next
+   keyframe.
 3. Every restream goroutine starts with `defer recover()`; on a panic the
    mount is closed, an event is emitted and that camera's restream stays off
    until its next session.
@@ -274,8 +302,10 @@ Tests:
   the file written is byte-identical in content and timing to a run without
   the restream (alongside `TestFanoutDropsWhenReaderIsFull`), and `restreamDropped` rises.
 - Integration: hourly rollover with a main-stream viewer attached: no gap in
-  the files (the existing rollover test with a viewer added), and the viewer
-  resumes within two keyframe intervals.
+  the files (the existing rollover test with a viewer added); the viewer's
+  stream decodes with no hole longer than 0.5 s across the switch. The same
+  with `source_changed` withheld: the viewer resumes within two keyframe
+  intervals.
 - Integration: single-session camera with a viewer: the camera sees one
   session only.
 - Chaos: kill the media process, and separately make the restream pump
@@ -329,7 +359,7 @@ of 16× over two hours of footage and of four players within 150 ms.
 - The acceptance list of spec 16.11, on the target Windows Server where it
   says so: 8-hour 16-tile run, 20 viewers (headless browsers plus the Go test
   viewer), kill and CPU-pin runs from `test/chaos`, both clock-change days,
-  the four browsers, Tailscale.
+  Chrome on Windows and Android, Safari on an iPhone, Tailscale.
 - Recorder CPU and memory with and without viewers, added to the table of
   decision 6.
 - `docs/OPERATIONS.md`: watching live and recordings, setting a sub stream on
@@ -347,7 +377,9 @@ of 16× over two hours of footage and of four players within 150 ms.
 | Delay creeps up in a tile left open all day | Live edge control and buffer trimming in the player; the 8-hour test |
 | A browser cannot play H.265 | Detect with `isTypeSupported`; fall back to an H.264 sub stream live; say so and offer the download for recordings; recommend H.264 sub streams in the camera test |
 | Safari and `hev1` | Checked in M0, step 8 |
-| iPhones before iOS 17.1 have no MSE | Not supported in v2; listed in the operations guide. An HLS fallback is in `docs/IDEAS.md` |
+| iPhones before iOS 17.1 have no MSE | Not supported in v2; the page says "Update iOS to 17.1 or later to watch" instead of an empty tile. An HLS fallback is in `docs/IDEAS.md` |
+| An iPhone cannot run many players at once | At most 4 tiles per page on phones; measured in M1 |
+| The make-before-break switch in the hub shows a jump | The switch is at a keyframe and the muxer keeps one timeline; the overlap is a few frames at most. Fallback is the plain reconnect |
 | Adjacent files do not line up exactly on the clock | Files without a gap are joined by media duration, not by wall clock (M2, step 4) |
 | A file's tracks differ from the previous one (audio appears, resolution changes) | New `MediaSource` at the boundary |
 | Sub streams use up a camera's session limit | One sub session per camera, shared by all viewers, closed 30 s after the last one |
@@ -370,15 +402,11 @@ of 16× over two hours of footage and of four players within 150 ms.
 - **Chaos script**: kill and CPU-pin the media process; viewers that connect
   and vanish at random.
 
-## 5. Questions for the owner
+## 5. Answers from the owner
 
-None of these block M0.
-
-1. Do Garrett's cameras have a sub stream enabled, and can it be set to
-   H.264? The grid depends on it.
-2. Which browsers and devices will be used to watch? (Older iPhones are the
-   one known gap.)
-3. Is a short freeze of the full-quality single view at the top of each hour
-   acceptable? Removing it means switching sessions inside one restream
-   mount, which is more code inside the worker.
-4. Are shared saved views right, or should each user have their own?
+| Question | Answer | Effect on the plan |
+| --- | --- | --- |
+| Do the cameras have an H.264 sub stream? | Assume yes | The grid is built on sub streams (M1). The camera test still warns when one is missing or H.265 |
+| Which browsers and devices? | Chrome and Safari; Windows, iPhone, Android | Phones are first-class (M1 step 9); `hvc1` for H.265 (M0 step 8); iOS 17.1 is the floor; Edge and Firefox are not acceptance targets |
+| Is a freeze at the top of the hour acceptable? | Avoid it if possible | Avoided: the hub switches sessions make-before-break (M3 step 2), with the plain reconnect as fallback |
+| Shared or per-user views? | Per-user, and Admins can share | `users.json` holds each user's views, `config.json` the shared ones (M1 step 8) |

@@ -47,8 +47,5 @@ spec are not repeated.
   iPhones). Left out of v2 on purpose; see `docs/DECISIONS.md`, decision 36.
 - **HLS fallback** for browsers without Media Source Extensions.
 - **Reverse playback.** v2 has frame step back and scrubbing only.
-- **Per-user saved views** in addition to the shared ones.
-- **Seamless main-stream live view across the hourly rollover**, by
-  switching sessions inside one restream mount.
 - **Snapshot wall for 25+ cameras**: one keyframe per camera every few
   seconds instead of moving video.
