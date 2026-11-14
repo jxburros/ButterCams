@@ -29,7 +29,7 @@ import (
 	aac "github.com/tphakala/go-aac"
 )
 
-//go:embed samples/h264_1s.h264 samples/h264_4s.h264 samples/h265_1s.h265 samples/g726_32.bin
+//go:embed samples/h264_1s.h264 samples/h264_4s.h264 samples/h264_small.h264 samples/h265_1s.h265 samples/g726_32.bin samples/opus_20ms.bin
 var samples embed.FS
 
 // FPS is the frame rate of the embedded sample streams.
@@ -44,8 +44,8 @@ type Stream struct {
 	Video string
 	// KeyframeInterval is 1 s (default) or 4 s. H.264 only.
 	KeyframeInterval time.Duration
-	// Audio is "none" (default), "aac", "pcmu", "pcma", "g726" or "speex"
-	// (a codec ButterCams does not record).
+	// Audio is "none" (default), "aac", "opus", "pcmu", "pcma", "g726" or
+	// "speex" (a codec ButterCams does not record).
 	Audio string
 	// SingleSession makes the camera refuse a second concurrent session with
 	// RTSP 453, like many cheap cameras do.
@@ -71,6 +71,7 @@ type stream struct {
 	mu         sync.Mutex
 	stallUntil time.Time
 	sessions   map[*gortsplib.ServerSession]struct{}
+	alt        [][][]byte // when set, the stream switches to these frames at its next keyframe
 }
 
 // Server is a running simulator.
@@ -168,6 +169,25 @@ func (s *Server) Kick(path string) {
 	}
 }
 
+// ChangeResolution makes an H.264 stream switch to a 160x120 picture at its
+// next keyframe, like a camera whose resolution setting was changed. The new
+// parameter sets arrive in-band only.
+func (s *Server) ChangeResolution(path string) error {
+	st := s.get(path)
+	if st == nil {
+		return fmt.Errorf("simulator: no stream %s", path)
+	}
+	data, err := samples.ReadFile("samples/h264_small.h264")
+	if err != nil {
+		return err
+	}
+	aus, _, _ := h264AccessUnits(data)
+	st.mu.Lock()
+	st.alt = aus
+	st.mu.Unlock()
+	return nil
+}
+
 // FailNewSessions makes a stream answer new connections with RTSP 500 while
 // existing sessions keep playing.
 func (s *Server) FailNewSessions(path string, on bool) {
@@ -187,6 +207,33 @@ func (s *Server) Sessions(path string) int {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return len(st.sessions)
+}
+
+// h264AccessUnits groups the NAL units of an Annex-B H.264 stream into access
+// units (split at access unit delimiters) and returns the parameter sets.
+func h264AccessUnits(data []byte) (aus [][][]byte, sps, pps []byte) {
+	var cur [][]byte
+	for _, n := range splitAnnexB(data) {
+		switch h264.NALUType(n[0] & 0x1F) {
+		case h264.NALUTypeAccessUnitDelimiter:
+			if len(cur) > 0 {
+				aus = append(aus, cur)
+			}
+			cur = nil
+			continue
+		case h264.NALUTypeSPS:
+			sps = n
+		case h264.NALUTypePPS:
+			pps = n
+		case h264.NALUTypeSEI:
+			continue
+		}
+		cur = append(cur, n)
+	}
+	if len(cur) > 0 {
+		aus = append(aus, cur)
+	}
+	return aus, sps, pps
 }
 
 // splitAnnexB splits an Annex-B byte stream (NAL units separated by 00 00 01
@@ -236,30 +283,7 @@ func loadVideo(cfg Stream) (*videoSource, error) {
 		if err != nil {
 			return nil, err
 		}
-		nalus := splitAnnexB(data)
-		var sps, pps []byte
-		var aus [][][]byte
-		var cur [][]byte
-		for _, n := range nalus {
-			switch h264.NALUType(n[0] & 0x1F) {
-			case h264.NALUTypeAccessUnitDelimiter:
-				if len(cur) > 0 {
-					aus = append(aus, cur)
-				}
-				cur = nil
-				continue
-			case h264.NALUTypeSPS:
-				sps = n
-			case h264.NALUTypePPS:
-				pps = n
-			case h264.NALUTypeSEI:
-				continue
-			}
-			cur = append(cur, n)
-		}
-		if len(cur) > 0 {
-			aus = append(aus, cur)
-		}
+		aus, sps, pps := h264AccessUnits(data)
 		f := &format.H264{PayloadTyp: 96, PacketizationMode: 1, SPS: sps, PPS: pps}
 		enc, err := f.CreateEncoder()
 		if err != nil {
@@ -446,6 +470,33 @@ func loadAudio(kind string) (*audioSource, error) {
 			return out
 		}}, nil
 
+	case "opus":
+		data, err := samples.ReadFile("samples/opus_20ms.bin")
+		if err != nil {
+			return nil, err
+		}
+		var packets [][]byte
+		for len(data) >= 2 {
+			n := int(data[0])<<8 | int(data[1])
+			if len(data) < 2+n {
+				break
+			}
+			packets = append(packets, data[2:2+n])
+			data = data[2+n:]
+		}
+		f := &format.Opus{PayloadTyp: 111, ChannelCount: 2}
+		const frame = 960 // 20 ms at 48 kHz
+		i := 0
+		return &audioSource{format: f, rate: 48000, next: func(until int64) []*rtp.Packet {
+			var out []*rtp.Packet
+			for pos < until {
+				out = append(out, mk(111, uint32(pos), packets[i%len(packets)]))
+				i++
+				pos += frame
+			}
+			return out
+		}}, nil
+
 	case "speex":
 		return &audioSource{format: &format.Speex{PayloadTyp: 98, SampleRate: 8000}, rate: 8000,
 			next: func(int64) []*rtp.Packet { return nil }}, nil
@@ -512,6 +563,8 @@ func (st *stream) run(video *videoSource, videoMedia *description.Media, audio *
 		nextRandomStall = start.Add(time.Duration(rng.Float64() * 2 * float64(st.cfg.StallEvery)))
 	}
 
+	frames := video.aus
+	idx := 0 // position in frames
 	for n := int64(0); ; n++ {
 		due := start.Add(time.Duration(n) * interval)
 		select {
@@ -526,6 +579,9 @@ func (st *stream) run(video *videoSource, videoMedia *description.Media, audio *
 			nextRandomStall = now.Add(st.cfg.StallFor + time.Duration(rng.Float64()*2*float64(st.cfg.StallEvery)))
 		}
 		stalled := now.Before(st.stallUntil)
+		if st.alt != nil && idx%len(frames) == 0 {
+			frames, idx, st.alt = st.alt, 0, nil // switch at the start of the loop: a keyframe
+		}
 		st.mu.Unlock()
 
 		var audioPkts []*rtp.Packet
@@ -533,11 +589,12 @@ func (st *stream) run(video *videoSource, videoMedia *description.Media, audio *
 			// Audio is generated even while stalled so its clock keeps running.
 			audioPkts = audio.next((n + 1) * int64(audio.rate) / FPS)
 		}
+		au := frames[idx%len(frames)]
+		idx++
 		if stalled {
 			continue
 		}
 
-		au := video.aus[n%int64(len(video.aus))]
 		if filler != nil {
 			au = append(append(make([][]byte, 0, len(au)+1), au...), filler)
 		}

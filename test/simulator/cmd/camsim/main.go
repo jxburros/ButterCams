@@ -25,7 +25,7 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8554", "address to listen on")
 	count := flag.Int("count", 1, "number of cameras")
 	video := flag.String("video", "h264", "video codec: h264, h265 or mjpeg (unsupported by ButterCams)")
-	audio := flag.String("audio", "none", "audio codec: none, aac, pcmu, pcma, g726 or speex (unsupported)")
+	audio := flag.String("audio", "none", "audio codec: none, aac, opus, pcmu, pcma, g726 or speex (unsupported)")
 	keyint := flag.Int("keyint", 1, "keyframe interval in seconds: 1 or 4 (H.264 only)")
 	single := flag.Bool("single-session", false, "refuse a second concurrent session per camera")
 	user := flag.String("user", "", "require this user name")

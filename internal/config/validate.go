@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"net"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -67,7 +66,7 @@ func (e Env) validLocalPath(p string) bool {
 	if e.windows() {
 		return winDriveRe.MatchString(p)
 	}
-	return filepath.IsAbs(p)
+	return strings.HasPrefix(p, "/")
 }
 
 func (e Env) remoteDrive(p string) bool {

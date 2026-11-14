@@ -212,9 +212,12 @@ func (m *Mover) setDestinations(v *ipc.Destinations) {
 		}
 		if st.cfg.Path != d.Path || st.cfg.Username != d.Username || st.cfg.PasswordEnc != d.PasswordEnc ||
 			st.cfg.Enabled != d.Enabled || st.cfg.Type != d.Type {
-			// The connection details changed: try again right away.
-			st.failures, st.nextTry, st.connected = 0, time.Time{}, false
+			// The connection details changed: start over.
+			st.failures, st.connected = 0, false
 		}
+		// Someone just saved the storage settings, most likely to fix
+		// something: try again now instead of sitting out the retry wait.
+		st.nextTry = time.Time{}
 		st.cfg = d
 	}
 	for id := range m.dests {

@@ -105,9 +105,13 @@ export function idFromName(name: string): string {
     .replace(/-+$/, '');
 }
 
-/** A local Windows path that starts with a drive letter, such as E:\Recordings. */
+/**
+ * A full local path: a drive letter path such as E:\Recordings, or an absolute
+ * path starting with "/" (a development server on Linux or macOS). The server
+ * knows which of the two it accepts and has the final word.
+ */
 export function looksLikeDrivePath(path: string): boolean {
-  return /^[A-Za-z]:[\\/]/.test(path);
+  return /^[A-Za-z]:[\\/]/.test(path) || path.startsWith('/');
 }
 
 /** A share path such as \\server\share or \\server\share\folder. */

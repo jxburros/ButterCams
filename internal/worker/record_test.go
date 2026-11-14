@@ -452,3 +452,68 @@ func TestUsedNamesFromGuardianAreNotReused(t *testing.T) {
 		t.Fatalf("new file %s reuses a name the index already holds", filepath.Base(opened.Path))
 	}
 }
+
+// Opus is copied as received; MP4 can carry it (spec 6.3).
+func TestRecordOpusAudio(t *testing.T) {
+	t.Parallel()
+	c, _ := recordFor(t, simulator.Stream{Path: "/cam", Audio: "opus"}, 4*time.Second)
+	if c.AudioCodec != "opus" {
+		t.Fatalf("audio codec %q, want opus", c.AudioCodec)
+	}
+	checkClosedFile(t, c)
+	p := ffprobe(t, c.Path)
+	if p.codec("audio") != "opus" || p.codec("video") != "h264" {
+		t.Fatalf("ffprobe sees %q/%q", p.codec("video"), p.codec("audio"))
+	}
+	dur := c.End.Sub(c.Start.Time).Seconds()
+	if n := p.frames("audio"); float64(n) < (dur-1.5)*50 || float64(n) > (dur+1)*50 {
+		t.Fatalf("%d Opus packets in %.1f s, want about 50 per second", n, dur)
+	}
+}
+
+// When the parameter sets change mid-stream (the camera's resolution was
+// changed), the file is closed and a new one starts at that keyframe, without
+// a gap (spec 6.2).
+func TestParameterChangeStartsNewFile(t *testing.T) {
+	t.Parallel()
+	sim := startSim(t, simulator.Stream{Path: "/cam"})
+	h := startWorker(t, t.TempDir(), nil)
+	h.assign(simCamera(t, sim, "cam", "/cam"))
+	h.waitOpened(15*time.Second, 0)
+	time.Sleep(2 * time.Second)
+	if err := sim.ChangeResolution("/cam"); err != nil {
+		t.Fatal(err)
+	}
+	closed, idx := h.waitClosed(15*time.Second, 0)
+	if closed.Reason != ipc.ReasonParamChange {
+		t.Fatalf("close reason %q, want param_change", closed.Reason)
+	}
+	second, _ := h.waitOpened(5*time.Second, idx-1)
+	if second.Gap {
+		t.Fatal("a resolution change is not a gap")
+	}
+	if seam := second.Start.Sub(closed.End.Time); seam < -300*time.Millisecond || seam > 300*time.Millisecond {
+		t.Fatalf("seam at the parameter change is %v", seam)
+	}
+	checkClosedFile(t, closed)
+	if p := ffprobe(t, closed.Path); p.Streams[0].Width != 320 || p.Streams[0].Height != 240 {
+		t.Fatalf("first file is %dx%d", p.Streams[0].Width, p.Streams[0].Height)
+	}
+	time.Sleep(2 * time.Second)
+	h.stop()
+	last, _ := h.waitClosed(time.Second, idx)
+	checkClosedFile(t, last)
+	if p := ffprobe(t, last.Path); p.Streams[0].Width != 160 || p.Streams[0].Height != 120 {
+		t.Fatalf("file after the change is %dx%d, want 160x120", p.Streams[0].Width, p.Streams[0].Height)
+	}
+	// The dashboard follows the new resolution.
+	var st *ipc.CameraStats
+	for _, m := range h.all() {
+		if s, ok := m.(*ipc.CameraStats); ok && s.State == ipc.StateRecording && s.Width != 0 {
+			st = s
+		}
+	}
+	if st == nil || st.Width != 160 || st.Height != 120 {
+		t.Fatalf("stats after the change: %+v", st)
+	}
+}

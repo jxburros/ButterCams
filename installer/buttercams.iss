@@ -56,6 +56,7 @@ Filename: "{code:SettingsURL}"; Description: "Open the ButterCams settings page"
 
 [Code]
 const
+  LineBreak = #13#10;
   DRIVE_REMOTE = 4;
   MinStagingGB = 100;
   DefaultPort = '8650';
@@ -194,7 +195,7 @@ begin
   { 1. Data root and staging folder }
   FoldersPage := CreateInputDirPage(wpWelcome, 'Where ButterCams keeps its data',
     'Choose the data folder and the staging folder.',
-    'The data folder holds the settings, the index, logs and certificates.' + #13#10 +
+    'The data folder holds the settings, the index, logs and certificates.' + LineBreak +
     'Every camera records into the staging folder first; finished hours are then copied to your storage ' +
     'destinations. Staging must be on a local disk with plenty of room - ideally not the Windows drive.',
     False, '');
@@ -359,14 +360,14 @@ begin
       if FreeBytes div (1024 * 1024 * 1024) < MinStagingGB then
         if MsgBox('The staging drive has less than 100 GB free (' + IntToStr(FreeBytes div (1024 * 1024 * 1024)) +
           ' GB). ButterCams deletes the oldest staging files when space runs low, so recordings could be lost ' +
-          'before they are copied.' + #13#10#13#10 + 'Use this folder anyway?', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDNO then
+          'before they are copied.' + LineBreak + LineBreak + 'Use this folder anyway?', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDNO then
         begin
           Result := False;
           exit;
         end;
     if CompareText(ExtractFileDrive(Staging), ExpandConstant('{sd}')) = 0 then
       if MsgBox('The staging folder is on the Windows drive. A dedicated disk is safer: recording writes ' +
-        'continuously and Windows needs free space too.' + #13#10#13#10 + 'Use this folder anyway?',
+        'continuously and Windows needs free space too.' + LineBreak + LineBreak + 'Use this folder anyway?',
         mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDNO then
         Result := False;
   end
@@ -464,7 +465,7 @@ begin
   SetEnvironmentVariable('BUTTERCAMS_ADMIN_PASSWORD', '');
   SetEnvironmentVariable('BUTTERCAMS_DEST_PASSWORD', '');
   if Code <> 0 then
-    RaiseException('ButterCams could not prepare its data folder:' + #13#10 + Output);
+    RaiseException('ButterCams could not prepare its data folder:' + LineBreak + Output);
 
   if not Upgrade then
     SetIniString('InternetShortcut', 'URL', 'https://localhost:' + PortValue(),
@@ -481,7 +482,7 @@ begin
   Code := RunButterCams(Exe, Args, Output);
   SetEnvironmentVariable('BUTTERCAMS_SERVICE_PASSWORD', '');
   if Code <> 0 then
-    RaiseException('The ButterCams service could not be installed:' + #13#10 + Output);
+    RaiseException('The ButterCams service could not be installed:' + LineBreak + Output);
 end;
 
 { Uninstall: recordings on destinations are never touched. The data folder
@@ -496,8 +497,8 @@ begin
     exit;
   Args := 'setup uninstall-service';
   if not UninstallSilent() then
-    if MsgBox('Also remove the ButterCams data folder (settings, index, logs and any recordings still in staging)?' +
-      #13#10#13#10 + 'Recordings on your storage destinations are never deleted.' + #13#10 +
+    if MsgBox('Also remove the ButterCams data folder (settings, index, logs and any recordings still in staging)?' + LineBreak + LineBreak +
+      'Recordings on your storage destinations are never deleted.' + LineBreak +
       'Choose No to keep everything for a later reinstall.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
       Args := Args + ' --remove-data';
   Exec(ExpandConstant('{app}\buttercams.exe'), Args, '', SW_HIDE, ewWaitUntilTerminated, Code);
