@@ -551,11 +551,26 @@ export class TimelinePlayer implements SyncPlayer {
     const nextStart = Number.isNaN(parsed) ? following.startMs : parsed;
     const frameMs = head.frameMs > 0 ? head.frameMs : this.frameDuration > 0 ? this.frameDuration * 1000 : 1000 / (this.opts.fps && this.opts.fps > 0 ? this.opts.fps : 15);
     const { keep, keptMs } = seamKeep(head.index.chunks, head.placed.wallStartMs, head.index.durationMs, nextStart, frameMs);
-    if (keep < total && keep >= head.next) {
-      head.limit = keep;
-      head.placed.duration = keptMs / 1000;
-      this.setAppendWindow(head);
+    if (keep >= total) return;
+    const cutAt = head.placed.mediaStart + keptMs / 1000;
+    if (keep < head.next) {
+      // The repeated chunks are already in the buffer (playing at the newest
+      // video when the hour turned): take them out again, unless the playhead
+      // is already in them.
+      const sb = this.sb;
+      if (!sb || this.video.currentTime >= cutAt - 0.1) return;
+      await waitUpdate(sb);
+      try {
+        sb.remove(cutAt, head.placed.mediaStart + head.placed.duration + 1);
+        await waitUpdate(sb);
+      } catch {
+        return;
+      }
+      head.next = keep;
     }
+    head.limit = keep;
+    head.placed.duration = keptMs / 1000;
+    this.setAppendWindow(head);
   }
 
   /** Nothing of a file may land outside its place: the rollover overlap is cut here. */
