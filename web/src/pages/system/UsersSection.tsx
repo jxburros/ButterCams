@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import type { FormEvent } from 'react';
 import { api, errorMessage } from '../../api/client';
-import type { Role, UserAccount, UserUpdate } from '../../api/types';
+import type { Camera, Role, UserAccount, UserUpdate } from '../../api/types';
 import { useAuth } from '../../auth/AuthContext';
 import { Alert } from '../../components/Alert';
 import { Badge } from '../../components/Badge';
@@ -12,8 +12,9 @@ import type { FieldErrors } from '../../lib/forms';
 import { hasErrors, serverErrors } from '../../lib/forms';
 import { useLoad } from '../../lib/hooks';
 import { checkPassword } from '../../lib/validate';
+import '../../live.css';
 
-const FIELDS = ['username', 'password', 'role'] as const;
+const FIELDS = ['username', 'password', 'role', 'cameras'] as const;
 
 const ROLE_LABELS: Record<Role, string> = {
   admin: 'Admin',
@@ -27,21 +28,101 @@ function toRole(value: string): Role {
 function RoleOptions() {
   return (
     <>
-      <option value="viewer">Viewer (status and recordings only)</option>
+      <option value="viewer">Viewer (live view, recordings and status)</option>
       <option value="admin">Admin (everything)</option>
     </>
   );
 }
 
 interface FormProps {
+  cameras: Camera[];
   onDone: (message: string) => void;
   onCancel: () => void;
 }
 
-function AddUserForm({ onDone, onCancel }: FormProps) {
+/** `null` = every camera; a list = only those (spec 16.6). */
+type Limit = string[] | null;
+
+function sameLimit(a: Limit, b: Limit): boolean {
+  if (a === null || b === null) return a === b;
+  return a.length === b.length && [...a].sort().join('\n') === [...b].sort().join('\n');
+}
+
+function limitText(account: UserAccount, cameras: Camera[]): string {
+  if (account.role === 'admin' || account.cameras === null) return 'All cameras';
+  if (account.cameras.length === 0) return 'No cameras';
+  const names = account.cameras.map((id) => cameras.find((camera) => camera.id === id)?.name ?? id);
+  return names.length <= 3 ? names.join(', ') : `${names.slice(0, 3).join(', ')} and ${names.length - 3} more`;
+}
+
+/** Which cameras a Viewer may see. Admins always see all of them. */
+function CameraLimit({
+  role,
+  cameras,
+  value,
+  onChange,
+  error,
+}: {
+  role: Role;
+  cameras: Camera[];
+  value: Limit;
+  onChange: (value: Limit) => void;
+  error?: string;
+}) {
+  const name = useId();
+  if (role === 'admin') {
+    return <p className="field-hint">Admins always see every camera.</p>;
+  }
+  // Cameras in the limit that were deleted since stay listed, so saving does not silently drop them.
+  const known = new Set(cameras.map((camera) => camera.id));
+  const gone = (value ?? []).filter((id) => !known.has(id));
+  return (
+    <fieldset className="camera-limit">
+      <legend>Cameras this user may see</legend>
+      <div className="check-row">
+        <input id={`${name}-all`} type="radio" name={name} checked={value === null} onChange={() => onChange(null)} />
+        <label htmlFor={`${name}-all`}>All cameras, including ones added later</label>
+      </div>
+      <div className="check-row">
+        <input id={`${name}-some`} type="radio" name={name} checked={value !== null} onChange={() => onChange(value ?? [])} />
+        <label htmlFor={`${name}-some`}>Only the cameras ticked below</label>
+      </div>
+      {value !== null ? (
+        cameras.length + gone.length === 0 ? (
+          <p className="muted">No cameras have been added yet.</p>
+        ) : (
+          <div className="pick-grid">
+            {[...cameras.map((camera) => ({ id: camera.id, name: camera.name })), ...gone.map((id) => ({ id, name: `${id} (deleted)` }))].map(
+              (camera) => {
+                const on = value.includes(camera.id);
+                return (
+                  <label key={camera.id} className={on ? 'pick pick-on' : 'pick'}>
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={() => onChange(on ? value.filter((id) => id !== camera.id) : [...value, camera.id])}
+                    />
+                    <span className="pick-name">{camera.name}</span>
+                  </label>
+                );
+              },
+            )}
+          </div>
+        )
+      ) : null}
+      <p className="field-hint">
+        The limit applies to live view, recordings, downloads and events. A user limited to no cameras sees nothing.
+      </p>
+      {error ? <p className="field-error">{error}</p> : null}
+    </fieldset>
+  );
+}
+
+function AddUserForm({ cameras, onDone, onCancel }: FormProps) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<Role>('viewer');
+  const [limit, setLimit] = useState<Limit>(null);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -59,7 +140,7 @@ function AddUserForm({ onDone, onCancel }: FormProps) {
 
     setBusy(true);
     try {
-      await api.createUser({ username: name, password, role });
+      await api.createUser({ username: name, password, role, cameras: role === 'viewer' ? limit : null });
       onDone(`User ${name} was added.`);
     } catch (err) {
       const result = serverErrors(err, FIELDS);
@@ -97,6 +178,7 @@ function AddUserForm({ onDone, onCancel }: FormProps) {
           <RoleOptions />
         </SelectField>
       </div>
+      <CameraLimit role={role} cameras={cameras} value={limit} onChange={setLimit} error={errors.cameras} />
       <div className="button-row">
         <button type="submit" className="button button-primary" disabled={busy}>
           {busy ? 'Adding…' : 'Add user'}
@@ -109,9 +191,10 @@ function AddUserForm({ onDone, onCancel }: FormProps) {
   );
 }
 
-function EditUserForm({ account, onDone, onCancel }: FormProps & { account: UserAccount }) {
+function EditUserForm({ account, cameras, onDone, onCancel }: FormProps & { account: UserAccount }) {
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<Role>(account.role);
+  const [limit, setLimit] = useState<Limit>(account.cameras);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -127,10 +210,11 @@ function EditUserForm({ account, onDone, onCancel }: FormProps & { account: User
       if (passwordError) found.password = passwordError;
       update.password = password;
     }
+    if (role === 'viewer' && !sameLimit(limit, account.cameras)) update.cameras = limit;
     setErrors(found);
     if (hasErrors(found)) return;
-    if (update.role === undefined && update.password === undefined) {
-      setFailure('Nothing to save: choose a different role or enter a new password.');
+    if (update.role === undefined && update.password === undefined && update.cameras === undefined) {
+      setFailure('Nothing to save: choose a different role or cameras, or enter a new password.');
       return;
     }
 
@@ -165,6 +249,7 @@ function EditUserForm({ account, onDone, onCancel }: FormProps & { account: User
           autoFocus
         />
       </div>
+      <CameraLimit role={role} cameras={cameras} value={limit} onChange={setLimit} error={errors.cameras} />
       <div className="button-row">
         <button type="submit" className="button button-primary" disabled={busy}>
           {busy ? 'Saving…' : 'Save changes'}
@@ -182,6 +267,8 @@ type Editing = { kind: 'none' } | { kind: 'add' } | { kind: 'edit'; account: Use
 export function UsersSection() {
   const { user: me, refresh } = useAuth();
   const users = useLoad(api.users);
+  const cameras = useLoad(api.cameras);
+  const cameraList = cameras.data?.cameras ?? [];
   const [editing, setEditing] = useState<Editing>({ kind: 'none' });
   const [notice, setNotice] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<UserAccount | null>(null);
@@ -246,6 +333,7 @@ export function UsersSection() {
               <tr>
                 <th scope="col">User name</th>
                 <th scope="col">Role</th>
+                <th scope="col">Cameras</th>
                 <th scope="col">Created</th>
                 <th scope="col">Status</th>
                 <th scope="col">Actions</th>
@@ -259,6 +347,7 @@ export function UsersSection() {
                     {account.username === me?.username ? <span className="cell-note"> (you)</span> : null}
                   </th>
                   <td>{ROLE_LABELS[account.role] ?? account.role}</td>
+                  <td>{limitText(account, cameraList)}</td>
                   <td>{formatDate(account.createdAt)}</td>
                   <td>
                     {account.locked ? <Badge tone="amber">Locked</Badge> : <Badge tone="green">Active</Badge>}
@@ -272,7 +361,7 @@ export function UsersSection() {
                           setNotice(null);
                           setEditing({ kind: 'edit', account });
                         }}
-                        aria-label={`Change password or role of ${account.username}`}
+                        aria-label={`Change password, role or cameras of ${account.username}`}
                       >
                         Change
                       </button>
@@ -298,6 +387,7 @@ export function UsersSection() {
 
       {editing.kind === 'add' ? (
         <AddUserForm
+          cameras={cameraList}
           onCancel={() => setEditing({ kind: 'none' })}
           onDone={(message) => void afterChange('', message)}
         />
@@ -306,6 +396,7 @@ export function UsersSection() {
         <EditUserForm
           key={editing.account.username}
           account={editing.account}
+          cameras={cameraList}
           onCancel={() => setEditing({ kind: 'none' })}
           onDone={(message) => void afterChange(editing.account.username, message)}
         />

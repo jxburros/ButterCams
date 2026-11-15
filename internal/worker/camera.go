@@ -98,6 +98,7 @@ type Camera struct {
 
 	fan    *stream.Fanout
 	reader *stream.Reader
+	rs     camRestream // what the loopback restream knows about this camera
 
 	// requests from the worker, picked up by the goroutine
 	wake       chan struct{}
@@ -134,6 +135,7 @@ type Camera struct {
 	lastDropped    uint64
 	lastDropWarn   time.Time
 	audioWarned    string
+	announced      uint64 // newest session reported to the guardian for the restream
 
 	mu sync.Mutex
 	st camStats
@@ -367,6 +369,7 @@ func (c *Camera) cycle() (stop bool) {
 		return c.wait(ErrorRetry)
 	}
 	c.proc = proc
+	c.publishSessions()
 	c.noteAudio()
 
 	out, msg := c.record()
@@ -540,6 +543,7 @@ func (c *Camera) record() (outcome, string) {
 			c.cur.close()
 			c.cur, c.proc = c.next, c.nextProc
 			c.next, c.nextProc = nil, nil
+			c.publishSessions()
 			c.prevBytes = c.cur.bytes.Load()
 			c.roll.pending = false
 			c.roll.refreshAt = time.Time{}
@@ -673,6 +677,7 @@ func (c *Camera) switchTo(u stream.Sample) (outcome, string, bool) {
 	old := c.cur
 	c.cur, c.proc = c.next, c.nextProc
 	c.next, c.nextProc = nil, nil
+	c.publishSessions()
 	c.prevBytes = c.cur.bytes.Load()
 	c.roll.pending = false
 	c.roll.refreshAt = time.Time{}
@@ -777,6 +782,7 @@ func (c *Camera) closeSessions() {
 		go c.cur.close()
 	}
 	c.cur, c.proc, c.next, c.nextProc = nil, nil, nil, nil
+	c.publishSessions()
 }
 
 // finish closes the file cleanly and drops the sessions.
@@ -938,6 +944,7 @@ func (c *Camera) nextDialed(res dialResult) {
 		return
 	}
 	c.next, c.nextProc = res.sess, proc
+	c.publishSessions()
 }
 
 func (c *Camera) markSingle(why string) {
@@ -969,6 +976,7 @@ func (c *Camera) dropNext() {
 	if c.next != nil {
 		go c.next.close()
 		c.next, c.nextProc = nil, nil
+		c.publishSessions()
 	}
 }
 
@@ -1054,6 +1062,7 @@ func (c *Camera) stats(prev *statsBase, now time.Time) *ipc.CameraStats {
 		CurrentFileBytes:   st.fileBytes,
 		SingleSession:      st.single,
 		DroppedPackets:     c.reader.Dropped(),
+		RestreamDropped:    c.rs.droppedTotal(),
 	}
 	if !st.lastPacket.IsZero() {
 		out.LastPacketTS = ipc.T(st.lastPacket)

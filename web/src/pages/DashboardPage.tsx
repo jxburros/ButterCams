@@ -18,6 +18,7 @@ import {
   formatTime,
 } from '../lib/format';
 import { REFRESH_MS, useLoad, useNow, usePageTitle } from '../lib/hooks';
+import { MediaSection } from './dashboard/MediaSection';
 
 function audioText(camera: Camera): string {
   const stats = camera.stats;
@@ -297,6 +298,8 @@ export function DashboardPage() {
           </p>
         ) : null}
       </section>
+
+      <MediaSection cameras={cameraList} />
     </>
   );
 }
