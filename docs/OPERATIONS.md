@@ -8,7 +8,13 @@ something looks wrong.
 
 ## 1. Install
 
-Run `ButterCams-<version>-setup.exe` as an administrator on the server
+Download `ButterCams-<version>-setup.exe` from the
+[releases page](https://github.com/jxburros/ButterCams/releases). It is not
+code-signed, so Windows SmartScreen may ask for confirmation; the release's
+`SHA256SUMS.txt` lets you check the download
+(`Get-FileHash ButterCams-<version>-setup.exe`).
+
+Run it as an administrator on the server
 (Windows Server 2019, 2022 or 2025; Windows 10/11 for testing). The wizard
 asks for:
 
@@ -236,4 +242,5 @@ go run ./test/simulator/cmd/camsim --count 8 --audio pcmu     # simulated camera
 
 `test/chaos/chaos.ps1` breaks a running installation at random and checks
 that it recovers; see `test/chaos/README.md`. The installer is built with
-`installer\build.ps1` (needs Inno Setup 6).
+`installer\build.ps1` (needs Inno Setup 6); `installer\smoke.ps1` is the
+service smoke test CI runs. Publishing a release is in `docs/RELEASING.md`.

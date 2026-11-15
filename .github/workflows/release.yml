@@ -1,0 +1,120 @@
+name: Release
+
+# Publishes a GitHub release with the Windows installer and executable.
+# Started by hand from main (Actions → Release → Run workflow); merging and
+# pushing tags publish nothing. docs/RELEASING.md describes the procedure.
+#
+# Planning, verification and publication are the shared workflows of
+# JX-Holdings-LLC/release-infrastructure. Every reference to it below, and
+# every toolkit-ref, must be the same reviewed full commit.
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: stable for versions like 1.2.3, preview for versions like 1.3.0-beta.1
+        type: choice
+        options: [stable, preview]
+        default: stable
+      dry_run:
+        description: Build, test and verify only; publish nothing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    uses: JX-Holdings-LLC/release-infrastructure/.github/workflows/plan.yml@d7f42f9910c075ef34915fa2b95cf28dd2be534a
+    with:
+      toolkit-ref: d7f42f9910c075ef34915fa2b95cf28dd2be534a
+      channel: ${{ inputs.channel }}
+      app: buttercams
+
+  build:
+    name: Build and test (Windows)
+    needs: plan
+    if: needs.plan.outputs.selected == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      RELEASE_VERSION: ${{ fromJSON(needs.plan.outputs.apps).buttercams.version }}
+      RELEASE_SOURCE_SHA: ${{ needs.plan.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: JX-Holdings-LLC/release-infrastructure
+          ref: d7f42f9910c075ef34915fa2b95cf28dd2be534a
+          path: .toolkit
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The web UI is built with the Node.js version CI uses.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Build the executable and the installer
+        shell: pwsh
+        run: ./installer/build.ps1 -Version $env:RELEASE_VERSION
+
+      - name: Test
+        run: go test ./... -count=1 -timeout 20m
+
+      - name: Smoke test the service on Windows
+        shell: pwsh
+        run: ./installer/smoke.ps1 -ExpectVersion $env:RELEASE_VERSION
+
+      # The release toolkit needs Node.js 24.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+
+      # Copies exactly the configured assets out of dist and fails when one
+      # is missing or empty.
+      - name: Collect the release files
+        shell: pwsh
+        run: |
+          node .toolkit/src/release.mjs stage --app buttercams --from dist --bundle release-bundle --sha $env:RELEASE_SOURCE_SHA
+          if ($LASTEXITCODE -ne 0) { throw "staging the release files failed" }
+          Get-ChildItem release-bundle | Get-FileHash -Algorithm SHA256 | Format-Table Hash, @{n="File";e={Split-Path $_.Path -Leaf}} -AutoSize
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-buttercams
+          path: release-bundle
+          if-no-files-found: error
+
+  finish:
+    needs: [plan, build]
+    permissions:
+      contents: write
+    uses: JX-Holdings-LLC/release-infrastructure/.github/workflows/finish.yml@d7f42f9910c075ef34915fa2b95cf28dd2be534a
+    with:
+      toolkit-ref: d7f42f9910c075ef34915fa2b95cf28dd2be534a
+      source-sha: ${{ needs.plan.outputs.sha }}
+      app: buttercams
+      security: standard
+      artifact: release-buttercams
+      dry-run: ${{ inputs.dry_run }}
