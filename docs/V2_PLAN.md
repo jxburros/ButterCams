@@ -1,8 +1,8 @@
 # Building v2: Live View and Timeline Playback
 
 `BUTTERCAMS_SPEC.md` section 16 says **what** v2 must do. This document says
-**how** to build it: the order, the code that changes, the tests, and the
-risks. Nothing here is built yet.
+**how** it was built: the order, the code that changed, the tests, and the
+risks. Section 6 says what is done and what is still to be proven.
 
 ## 1. The shape of the solution
 
@@ -410,3 +410,41 @@ of 16× over two hours of footage and of four players within 150 ms.
 | Which browsers and devices? | Chrome and Safari; Windows, iPhone, Android | Phones are first-class (M1 step 9); `hvc1` for H.265 (M0 step 8); iOS 17.1 is the floor; Edge and Firefox are not acceptance targets |
 | Is a freeze at the top of the hour acceptable? | Avoid it if possible | Avoided: the hub switches sessions make-before-break (M3 step 2), with the plain reconnect as fallback |
 | Shared or per-user views? | Per-user, and Admins can share | `users.json` holds each user's views, `config.json` the shared ones (M1 step 8) |
+
+## 6. Status
+
+Milestones M0 to M4 are built. What each test of this plan became:
+
+| Plan item | Where |
+| --- | --- |
+| v1 config loads and is rewritten as schema 2 | `internal/config` `TestV1ConfigIsMigratedToSchema2`, `migrations` `TestV1ToV2AddsLive` |
+| A restricted viewer is fenced in, on every route | `internal/api` `TestLimitedViewerIsFencedIn` |
+| Views: own, shared, filtered | `internal/api` `TestSavedViews` |
+| `OpenShared`: rename and delete under a reader | `internal/winsvc` `TestOpenSharedAllowsWriteRenameAndDelete` (meaningful on the Windows CI job) |
+| Live stream decodes (H.264, H.265, 1 s and 4 s keyframes, stall, parameter change) | `internal/media` `live_stream_test.go` |
+| A viewer that never reads delays nobody; source closes after the last viewer | `internal/media` `live_stream_test.go` |
+| Main stream, session switch without a hole, fallback | `internal/media` `live_main_test.go`; `internal/worker` `restream_test.go` |
+| File identical with a stuck restream client; pump panics | `internal/worker` `restream_test.go` |
+| Chunks cover a file exactly once; open-file index; keyframe fragments; thumbnails | `internal/mp4meta` `index_test.go`, `internal/media` `playback_test.go` |
+| Stitching across hour files, no missing or repeated frame | `internal/worker` `playback_stitch_test.go` |
+| Share that hangs falls back; handle pool; read budget | `internal/media` `playback_test.go` |
+| Browser → guardian → media → camera and files, end to end | `internal/guardian` `TestLiveViewAndPlaybackEndToEnd` |
+| Kill the media process while watching | `internal/guardian` `TestMediaCrashDoesNotTouchRecording` |
+| The two live switches while recording | `internal/guardian` `TestLiveSwitches` |
+| Player logic (live edge, timeline map, DST days, sync, keyframe mode) | `web`, `npm test` |
+
+Not done, against this plan:
+
+- **Browser tests in the repository** (`web/e2e`, section 4) and their CI job.
+  The pages were exercised by hand-driven headless Chromium runs against
+  `buttercams console` and the simulator during the build (live grid, single
+  view, timeline playback, seek, scrub, camera limits, views, phone
+  viewport), but no browser test is checked in.
+- **A wall clock in the simulator's picture** for measuring latency from
+  outside. Latency was measured as the distance of the player from the live
+  edge of its buffer (about 0.25 s after 45 s).
+- **The 60-camera benchmark with restream clients** (M3). Only the cost of
+  the fan-out with an extra reader was measured (no difference).
+- **M5, the acceptance runs of spec 16.11**: they need the target Windows
+  Server, real cameras, phones and hours of running. The list is at the end
+  of `docs/DECISIONS.md`.

@@ -713,3 +713,31 @@ cross-build and the collection and verification of the release files were
 run locally with the toolkit, but the hosted run (Inno Setup, smoke test,
 draft, publication) happens for the first time when it is dispatched. Use
 the dry run first.
+
+### Version 2
+
+Built and tested on Linux with the camera simulator, ffmpeg and headless
+Chromium (H.264 only; that Chromium has no H.265 decoder). Still to be
+verified, none of it run here:
+
+- **Windows:** below-normal priority of the media process; the hourly
+  rename, staging cleanup and retention while a file is being played
+  (`OpenShared` is tested by the Windows CI job, the three scenarios through
+  the media process are not); playback from a network share with
+  credentials; the new chaos actions (`kill-media`, `pin-media`, `viewers`).
+- **Browsers and devices:** Safari on Mac and iPhone (`ManagedMediaSource`,
+  the iOS-before-17.1 message), Chrome on Android, touch gestures on real
+  screens, full screen, H.265 playback and the fallback when a browser
+  cannot play it, sound in a real browser.
+- **Endurance and load (spec 16.10, 16.11):** 16 tiles for 8 hours, 4 tiles
+  on a phone for an hour, 20 viewers, 24 consecutive hour files in the
+  browser, media process CPU and memory with 60 sub streams, recorder CPU
+  with viewers, both clock-change days on a real clock, Tailscale.
+- **Real cameras:** sub stream paths per brand in `docs/OPERATIONS.md` are
+  the documented ones of those brands and were not tried; UDP sub streams;
+  cameras that send AAC as LATM.
+- **The live session switch at the top of the hour with the real restream
+  and the real hub together.** Each side is tested against a stand-in
+  (`restream_test.go` with a plain client, `live_main_test.go` with the
+  simulator).
+

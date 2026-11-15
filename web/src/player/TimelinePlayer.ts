@@ -551,6 +551,7 @@ export class TimelinePlayer implements SyncPlayer {
     const nextStart = Number.isNaN(parsed) ? following.startMs : parsed;
     const frameMs = head.frameMs > 0 ? head.frameMs : this.frameDuration > 0 ? this.frameDuration * 1000 : 1000 / (this.opts.fps && this.opts.fps > 0 ? this.opts.fps : 15);
     const { keep, keptMs } = seamKeep(head.index.chunks, head.placed.wallStartMs, head.index.durationMs, nextStart, frameMs);
+    console.info('SEAMDEBUG', JSON.stringify({ keep, total, keptMs, dur: head.index.durationMs, frameMs, overlap: head.placed.wallStartMs + head.index.durationMs - nextStart }));
     if (keep >= total) return;
     const cutAt = head.placed.mediaStart + keptMs / 1000;
     if (keep < head.next) {
