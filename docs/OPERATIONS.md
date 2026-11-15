@@ -71,7 +71,28 @@ camera's recordings should go to.
 
 **Test connection** connects once and shows the codec, resolution, frame
 rate, keyframe interval, audio, and whether the camera allows a second
-connection.
+connection. When a sub stream path is filled in, it tests that too.
+
+**Sub stream path.** Nearly every camera sends a second, small picture next
+to its main one. ButterCams records the main stream and uses the sub stream
+for the Live grid, where sixteen full-size pictures would be far too heavy
+for a browser. Fill in the path of the sub stream (the host, port and login
+are the camera's own):
+
+| Camera brand | Main stream path | Sub stream path |
+| --- | --- | --- |
+| Hikvision | `/Streaming/Channels/101` | `/Streaming/Channels/102` |
+| Dahua, Amcrest | `/cam/realmonitor?channel=1&subtype=0` | `/cam/realmonitor?channel=1&subtype=1` |
+| Reolink | `/h264Preview_01_main` | `/h264Preview_01_sub` |
+| Uniview | `/media/video1` | `/media/video2` |
+| TP-Link Tapo | `/stream1` | `/stream2` |
+| Axis | `/axis-media/media.amp` | `/axis-media/media.amp?resolution=640x360` |
+
+Other brands: look for "sub stream", "second stream" or "stream 2" in the
+camera's manual or web page. Set the sub stream on the camera to **H.264**,
+640×360 or thereabouts, so that every browser can show it; the test warns
+when it is H.265 or larger than 1280×720. A camera without a sub stream
+still works: its tile uses the main stream.
 
 Camera settings that matter:
 
@@ -80,7 +101,8 @@ Camera settings that matter:
 | Video codec | H.264 or H.265. MJPEG and MPEG-4 are not recorded |
 | I-frame (keyframe) interval | 1–2 seconds. Files and hourly rollovers start on keyframes |
 | Audio | AAC, G.711 or G.726 (G.711/G.726 are stored as AAC). Other audio codecs are skipped and the camera's status says so |
-| Simultaneous connections | At least 2, so the hourly feed refresh leaves no gap |
+| Simultaneous connections | At least 3: two for the hourly feed refresh without a gap, one for the sub stream of the Live grid |
+| Sub stream | H.264, about 640×360. Used by the Live grid only, never recorded |
 
 Many cameras at once: **Bulk import** takes CSV text with the columns
 `name,host,port,path,username,password,destinations` (destinations separated
@@ -105,8 +127,9 @@ its name) names its folders and cannot be changed later.
   keeps its files in staging.
 - Every file plays in VLC and Windows Media Player as it is.
 
-**Recordings** lists the files per camera and day, shows where each copy is,
-and has download links.
+**Recordings → Files** lists the files per camera and day, shows where each
+copy is, and has download links. **Recordings → Timeline** plays them
+(section 7).
 
 ## 6. Reading the dashboard
 
@@ -126,16 +149,81 @@ Camera states:
 | Error | A setting is wrong; retried every 60 s | "Authentication failed": fix the user name/password. "Camera sends MJPEG…": change the camera's codec |
 | Disabled | Switched off in ButterCams | – |
 
-**Live** shows every camera as a tile in a grid of 1, 4, 9 or 16, with its
-recording state (refreshed every 5 seconds). Click a tile to see one camera.
-**New view** saves a named group of cameras, for example Entrances; saved
-views are kept in the browser you made them in. Live video itself is not in
-this version: the tiles show state only.
-
 **Events** keeps every incident for 90 days: stalls, restarts, deletions,
 status changes, and who changed what.
 
-## 7. When something goes wrong
+## 7. Watching: live and recordings
+
+Viewers and administrators can watch in the browser, from the same address
+and login as the settings. Watching never slows recording: everything that
+sends video to browsers runs in its own process at lower priority, and
+nothing runs for a camera nobody is looking at.
+
+**Live.** Every camera is a tile in a grid of 1, 4, 9 or 16, showing its sub
+stream (section 4). Click a tile for the full-quality main stream; sound is
+there, muted until you turn it on. A tile whose camera is not sending shows
+the camera's recording state and the reason, and starts by itself when the
+camera is back. Tiles that are not on screen (another page of the grid, a
+tab in the background) stop loading video.
+
+**Views.** **New view** saves a named group of cameras, for example
+Entrances. Your views are your own: other users do not see them.
+Administrators can also keep **shared views** that everyone sees, and can
+share one of their own with "Share with everyone". Views that version 1 saved
+in a browser are offered for import the first time you open Live there.
+
+**Recordings → Timeline.** Choose a camera and a day. Recorded time, gaps
+and recorder incidents (stalls, reconnects, clock changes) are drawn on the
+timeline; hover for the details, zoom from the whole day down to a minute.
+Click or drag anywhere to play from that moment; playback runs across the
+hourly files without a break and skips gaps, saying what was skipped.
+
+- Speeds 0.5× to 16×. At high speed, and while dragging, the player shows
+  one picture per second or so instead of every frame.
+- Paused: step frame by frame.
+- Up to four cameras play side by side at the same moment.
+- The hour being recorded right now is on the timeline too, up to a few
+  seconds behind live.
+- **Download** saves the hour file under the playhead.
+
+**Browsers.** Chrome on Windows and Android, Safari on Mac and on iPhone
+(iOS 17.1 or later; older iPhones show "Update iOS to 17.1 or later to
+watch"). Edge and Firefox are expected to work. On a phone the grid shows at
+most four tiles per page; swipe for more.
+
+**H.265 cameras.** The server never converts video, so the browser must be
+able to play what the camera sends. Chrome, Edge and Safari play H.265 on
+most current devices; where one cannot, the Live tile falls back to the sub
+stream (which is why the sub stream should be H.264) and the timeline offers
+the download instead. H.265 recordings made by version 1 play in Chrome but
+only download in Safari; recordings made from version 2 on play in both.
+
+**From outside the building.** ButterCams opens no ports to the internet and
+has no cloud relay. Live view and playback use only the HTTPS port (8650
+unless you changed it), so anything that carries that port carries them:
+
+- **Tailscale:** install Tailscale on the server and on your phone or
+  laptop, sign both into the same tailnet, and open
+  `https://<server's Tailscale name or 100.x address>:8650`.
+- **WireGuard** (or the VPN of your router): connect, then open
+  `https://<server's LAN address>:8650` as you would in the building.
+
+If **System → Network → Allowed subnets** is filled in, add the VPN's
+addresses (Tailscale: `100.64.0.0/10`). The certificate warning is the same
+as on the LAN (section 2).
+
+**What uses what.**
+
+| You watch | The server does |
+| --- | --- |
+| A grid tile | One extra connection to that camera's sub stream, shared by everyone watching it, closed 30 seconds after the last viewer leaves |
+| One camera, full quality | Nothing extra at the camera: the recorder passes on the stream it already receives |
+| A recording | Reads the file from the nearest copy: staging, then a local destination, then a network share |
+
+Limits: four streams of one camera per signed-in browser, 200 video
+connections in total. Beyond that a tile says so.
+
+## 8. When something goes wrong
 
 ButterCams recovers from these by itself; this is what you will see.
 
@@ -147,6 +235,7 @@ ButterCams recovers from these by itself; this is what you will see.
 | A recorder process crashes | Restarted within 2 seconds; the cut-off file is repaired and kept | A Warning event "worker restarted"; the affected cameras continue in a `_b` file |
 | The server loses power | The service starts by itself after boot; cut-off files are repaired | Gaps for the time the server was off; files end at most about 3 seconds before the power loss |
 | The clock is changed | Starts new files named for the corrected time | A `clock_jump` event |
+| The live view process crashes or hangs | Restarted within seconds; recording and copying are not involved | Tiles say "Live view is restarting" for a few seconds, then play again. An event "live view process was restarted". A Warning only if it stays down for 2 minutes |
 | `config.json` is damaged | Loads the newest good backup (ten are kept) | Critical status until you check the settings and press Save once |
 | The database is damaged | Sets it aside and rebuilds the index from the recordings | A Warning "index rebuilt" |
 
@@ -159,7 +248,19 @@ Things that do need you:
   refresh leaves a gap of a second or two. Raise the camera's connection
   limit if it has such a setting.
 
-## 8. System page
+Live view and playback:
+
+| What you see | Why | What to do |
+| --- | --- | --- |
+| "Live view is restarting" | The live view process is starting or was just restarted | Wait a few seconds. If it stays, look at Events for "live view process" |
+| A tile shows the recording state instead of a picture | The camera is not sending, or its sub stream cannot be reached | The reason is in the tile. Check the sub stream path with **Test connection** |
+| "This browser cannot play H.265" | The camera sends H.265 and this device has no decoder for it | Set the camera's sub stream to H.264; for recordings use Chrome or Safari on a newer device, or download the file |
+| The picture freezes for a moment at the top of the hour | The camera allows only one connection, so the recorder reconnects at the hour | Raise the camera's connection limit |
+| "Too many video connections" or "already open in four places" | The limits above | Close tiles or tabs |
+| Playback is slow to start from a network share | The file is read over the network | Nothing; a copy still in staging or on a local destination is used first |
+| Live view is not wanted at all | – | **System → Live view**: switch it off. The Live page and the timeline then say so, and nothing of it runs |
+
+## 9. System page
 
 - **Staging:** folder and floor. The floor is the larger of "minimum free %"
   and "minimum free GB". A new folder is used from each camera's next file;
@@ -169,8 +270,15 @@ Things that do need you:
   changing the port, the firewall rule must be changed too:
   `netsh advfirewall firewall set rule name="ButterCams Web" new localport=<port>`.
 - **Users:** administrators can change everything; viewers can look at
-  status and download recordings. Five wrong passwords lock an account for
+  status, watch live and recordings, and download recordings. A viewer can
+  be **limited to some cameras**: they then see only those cameras
+  everywhere (live, timeline, files, events), and nothing about the rest of
+  the system's incidents. Five wrong passwords lock an account for
   15 minutes.
+- **Live view:** *Live view and playback* switches all watching on or off
+  (off stops the live view process). *Full-quality live view* lets the
+  recorders pass their main streams on; off, the single-camera view uses the
+  sub stream too. Neither switch interrupts a recording.
 - **Log retention:** 1–365 days (logs are also capped at 2 GB).
 - **Configuration file:** Export downloads `config.json` without passwords;
   Import replaces the settings (passwords of existing cameras and
@@ -179,12 +287,12 @@ Things that do need you:
   list of recordings in line with what is on disk. Recording continues while
   it runs.
 
-## 9. Files and logs
+## 10. Files and logs
 
 | Path | Content |
 | --- | --- |
 | `<dataRoot>\config.json` (+ `.1` … `.10`) | Settings and the last ten versions |
-| `<dataRoot>\users.json` | Accounts (password hashes) |
+| `<dataRoot>\users.json` | Accounts (password hashes), each user's camera limit and own views |
 | `<dataRoot>\buttercams.db` | Index of recordings and the event log |
 | `<dataRoot>\logs\buttercams-YYYY-MM-DD.log` | JSON log lines of all processes |
 | `<dataRoot>\certs\` | HTTPS certificate and key |
@@ -199,7 +307,7 @@ logs; RTSP addresses are shown as `rtsp://user:***@host…`.
 restoring onto another machine, enter the camera and share passwords again.
 The database can always be rebuilt from the recordings.
 
-## 10. Commands
+## 11. Commands
 
 ```
 buttercams.exe version
@@ -219,23 +327,27 @@ start the service. Settings and recordings are untouched.
 The service checks itself; a monitoring tool can ask too, from the server
 itself, without a login: `https://localhost:8650/api/v1/health`.
 
-## 11. Upgrade and uninstall
+## 12. Upgrade and uninstall
 
 - **Upgrade:** run the new installer. Settings, accounts, the certificate,
   the index and all recordings are kept. Files being recorded are closed
-  cleanly and recording resumes in `_b` files.
+  cleanly and recording resumes in `_b` files. Upgrading from version 1 to
+  version 2 rewrites `config.json` in the new format by itself (the previous
+  file is kept as `config.json.1`); going back to version 1 afterwards needs
+  that backup.
 - **Uninstall:** Apps & features → ButterCams. You are asked whether to
   remove the data folder. **Recordings on your destinations are never
   deleted.** If you answer No, a later reinstall picks everything up again.
 
-## 12. Development and testing
+## 13. Development and testing
 
 ```
 cd web && npm ci && npm run build && cd ..        # build the settings page
 go build ./cmd/buttercams                          # build (also works on Linux/macOS)
 go test ./...                                      # unit and integration tests
+cd web && npm test && cd ..                        # unit tests of the players
 
-go run ./test/simulator/cmd/camsim --count 8 --audio pcmu     # simulated cameras on rtsp://127.0.0.1:8554/cam1…
+go run ./test/simulator/cmd/camsim --count 8 --audio pcmu --sub   # simulated cameras on rtsp://127.0.0.1:8554/cam1…, sub streams on /cam1/sub…
 ./buttercams setup init --data-root ./data --admin-user admin --admin-password "correct horse"
 ./buttercams console --data-root ./data            # then open https://localhost:8650
 ```

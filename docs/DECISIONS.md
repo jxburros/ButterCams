@@ -500,6 +500,98 @@ certificate), and there is no self-update: spec section 3 rules out cloud
 services, and an upgrade is running the new installer. See
 `docs/RELEASING.md`.
 
+## v2 as built
+
+Choices made while building live view and timeline playback (spec section
+16), where the spec and `docs/V2_PLAN.md` left room.
+
+### 45. `internal/stream` holds what the recorder and the media process share
+
+The plan moves the packet processor out of the worker. The fan-out
+(`Fanout`, `Reader`, `Packet`) and the builder of the MP4 header
+(`stream.InitSegment`) moved with it, because the restream and the live muxer
+need the same types and the same header. The move renamed fields to exported
+names and changed nothing else; the recorder tests were adjusted for the names
+only.
+
+### 46. `hvc1` is set by renaming the sample entry
+
+The MP4 library writes H.265 with the `hev1` sample entry. `InitSegment`
+renames it to `hvc1` in the bytes it returns: same length, and correct because
+all parameter sets are in the header (the recorder starts a new file when they
+change). The H.265 recording test checks the entry and still decodes the file
+with ffmpeg.
+
+### 47. What a Viewer with a camera limit sees
+
+- Lists (cameras, recording cameras, saved views, the `cameras` event) are
+  filtered to the user's cameras.
+- A request that names another camera gets `403 forbidden`. A request that
+  names a segment of another camera gets `404`, exactly like a segment that
+  does not exist, so segment ids cannot be probed.
+- **Events and health reasons:** only those that carry one of the user's
+  cameras. System-wide events and reasons (a worker restarted, a destination
+  failing) are hidden from limited Viewers, because their text often names
+  cameras ("Cameras affected: …"). The overall status is still shown.
+- The limit is read from `users.json` on every request, so changing it takes
+  effect at once, also for sessions and event streams that are already open.
+- Every route is registered with a `CameraRule`. `TestLimitedViewerIsFencedIn`
+  walks the route list as a limited Viewer; a new route that names a camera
+  fails the test until it is added to its table.
+
+### 48. Saved views never block a camera change
+
+Deleting a camera removes it from the shared views (in `Normalize`), instead
+of rejecting the configuration. A user's own views are stored as saved and
+filtered when read: cameras that no longer exist, or that the user may no
+longer see, are left out. Saving one's own views is the only change a Viewer
+may make besides signing out.
+
+### 49. Tokens between the guardian, the media process and the workers
+
+- The media process starts listening only after its first `assign_media`,
+  which carries the token for that run; the guardian makes a new token every
+  time it starts the process. A request without it, or not from 127.0.0.1,
+  gets 403.
+- The workers' restream uses one token per guardian run, sent in `restream`
+  and passed to the media process in `assign_media`. Clients present it as
+  the RTSP password of the user `buttercams`.
+- The guardian removes `Cookie`, `Origin`, the CSRF header and any
+  `X-ButterCams-*` header from a proxied request before adding its own, so a
+  browser can neither hand its session to the media process nor name a file.
+
+### 50. How file paths reach the media process
+
+For `/segments/{id}/play/…` the guardian resolves the segment to its candidate
+paths, nearest first, and sends them in the header `X-ButterCams-Paths` (a
+JSON list, base64). For the file being recorded it sends the `.part.mp4` path
+first and the closed name second, in case the file is closed at that moment.
+Network shares that need credentials are connected by the guardian (at most
+once a minute per destination, waiting at most 3 s); the connection belongs to
+the logon session, so the media process can open the file without ever
+holding a password for a destination.
+
+### 51. The sub stream is tested after the main stream
+
+"Test connection" closes its main-stream sessions before it connects to the
+sub stream, so a camera with a low session limit is not reported as refusing
+its sub stream for the wrong reason. The price is a longer test (a few
+seconds more).
+
+### 52. The media process and health
+
+A media process that has been down for two minutes is a Warning
+(`media_down`), never Critical. Its restarts are recorded as `info` events
+(`media_restarted`); a restart loop as a warning. It is restarted at once
+when it uses more than 1 GB, without waiting for the hour as workers do,
+because viewers simply reconnect.
+
+### 53. This is version 2.0.0
+
+Live view and timeline playback are "Version 2" in the spec, and the
+configuration file changes its schema, so the release version moves from
+1.0.0 to 2.0.0.
+
 ## Not verified here
 
 The build environment was Linux without a Windows machine. These parts are
