@@ -258,7 +258,7 @@ Live view and playback:
 | The picture freezes for a moment at the top of the hour | The camera allows only one connection, so the recorder reconnects at the hour | Raise the camera's connection limit |
 | "Too many video connections" or "already open in four places" | The limits above | Close tiles or tabs |
 | Playback is slow to start from a network share | The file is read over the network | Nothing; a copy still in staging or on a local destination is used first |
-| Live view is not wanted at all | – | **System → Live view**: switch it off. The Live page and the timeline then say so, and nothing of it runs |
+| Live view is not wanted at all | – | **System → Live view and playback**: switch it off. The Live page and the timeline then say so, and nothing of it runs |
 
 ## 9. System page
 
@@ -275,9 +275,10 @@ Live view and playback:
   everywhere (live, timeline, files, events), and nothing about the rest of
   the system's incidents. Five wrong passwords lock an account for
   15 minutes.
-- **Live view:** *Live view and playback* switches all watching on or off
-  (off stops the live view process). *Full-quality live view* lets the
-  recorders pass their main streams on; off, the single-camera view uses the
+- **Live view and playback:** *Live view and playback in the browser*
+  switches all watching on or off (off stops the live view process).
+  *Full-quality main stream in live view* lets the recorders pass their main
+  streams on; off, the single-camera view uses the
   sub stream too. Neither switch interrupts a recording.
 - **Log retention:** 1–365 days (logs are also capped at 2 GB).
 - **Configuration file:** Export downloads `config.json` without passwords;

@@ -29,7 +29,7 @@ browser, from the same page and login as the settings.
   offered for import.
 - **Recording comes first.** Everything that serves video to browsers runs
   in its own process at lower priority. If it is busy, crashes or is
-  switched off (System → Live view), recording and copying carry on
+  switched off (System → Live view and playback), recording and copying carry on
   unchanged.
 - Nothing extra to install, no new ports: live view and playback use the
   same HTTPS port, so they also work over Tailscale or WireGuard.
