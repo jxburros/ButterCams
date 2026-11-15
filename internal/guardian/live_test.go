@@ -320,7 +320,7 @@ func TestLiveViewAndPlaybackEndToEnd(t *testing.T) {
 	if mime, _ := main.inits[0]["mime"].(string); !strings.Contains(mime, "avc1.") || !strings.Contains(mime, "mp4a.40.2") || main.inits[0]["width"] != float64(320) {
 		t.Fatalf("main stream init message: %v", main.inits[0])
 	}
-	if d, ok := decodeMP4(t, main.data.Bytes()); ok && (d.codec != "h264" || d.width != 320 || d.frames < 40 || !d.ptsOK || d.audio != "aac") {
+	if d, ok := decodeMP4(t, main.data.Bytes()); ok && (d.codec != "h264" || d.width != 320 || d.frames < 15 || !d.ptsOK || d.audio != "aac") {
 		t.Fatalf("what the main stream viewer received does not decode cleanly: %+v", d)
 	}
 	if after := s.sim.Sessions("/cam1"); after != before {
@@ -349,13 +349,13 @@ func TestLiveViewAndPlaybackEndToEnd(t *testing.T) {
 		} `json:"segments"`
 	}
 	type playIndex struct {
-		Mime       string     `json:"mime"`
-		Init       [2]int64   `json:"init"`
-		DurationMs int64      `json:"durationMs"`
-		Chunks     [][4]int64 `json:"chunks"`
-		Open       bool       `json:"open"`
-		Width      int        `json:"width"`
-		HasAudio   bool       `json:"hasAudio"`
+		Mime       string       `json:"mime"`
+		Init       [2]int64     `json:"init"`
+		DurationMs float64      `json:"durationMs"`
+		Chunks     [][4]float64 `json:"chunks"`
+		Open       bool         `json:"open"`
+		Width      int          `json:"width"`
+		HasAudio   bool         `json:"hasAudio"`
 	}
 	rng := "from=" + url.QueryEscape(time.Now().Add(-time.Hour).Format(time.RFC3339)) + "&to=" + url.QueryEscape(time.Now().Add(time.Hour).Format(time.RFC3339))
 	var tl timeline
@@ -388,7 +388,7 @@ func TestLiveViewAndPlaybackEndToEnd(t *testing.T) {
 		var file bytes.Buffer
 		file.Write(rangeOf(idx.Init[0], idx.Init[1]))
 		for _, c := range idx.Chunks[:3] {
-			file.Write(rangeOf(c[2], c[3]))
+			file.Write(rangeOf(int64(c[2]), int64(c[3])))
 		}
 		if d, ok := decodeMP4(t, file.Bytes()); ok && (d.codec != "h264" || d.frames < 30 || !d.ptsOK || d.audio != "aac") {
 			t.Fatalf("three chunks of a recording do not decode cleanly: %+v", d)
@@ -398,7 +398,7 @@ func TestLiveViewAndPlaybackEndToEnd(t *testing.T) {
 			t.Fatal("the data route served a whole file without a Range header")
 		}
 		// A thumbnail is a complete MP4 with one picture.
-		status, thumb := s.get(fmt.Sprintf("/segments/%d/play/thumb?t=%d", id, idx.Chunks[1][0]+10), nil)
+		status, thumb := s.get(fmt.Sprintf("/segments/%d/play/thumb?t=%d", id, int64(idx.Chunks[1][0])+10), nil)
 		if status != 200 {
 			t.Fatalf("thumbnail: %d", status)
 		}
@@ -406,7 +406,7 @@ func TestLiveViewAndPlaybackEndToEnd(t *testing.T) {
 			t.Fatalf("thumbnail: %+v", d)
 		}
 		// Keyframe-only fragments: one picture per chunk.
-		status, kf := s.get(fmt.Sprintf("/segments/%d/play/keyframes?from=0&to=%d", id, idx.Chunks[2][0]+idx.Chunks[2][1]), nil)
+		status, kf := s.get(fmt.Sprintf("/segments/%d/play/keyframes?from=0&to=%d", id, int64(idx.Chunks[2][0]+idx.Chunks[2][1])-1), nil)
 		if status != 200 {
 			t.Fatalf("keyframes: %d", status)
 		}

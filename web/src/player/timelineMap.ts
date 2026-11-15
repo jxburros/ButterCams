@@ -148,7 +148,8 @@ export function seekTarget(spans: readonly Span[], wallMs: number, nowMs: number
   for (const span of spans) {
     const end = span.endMs ?? Math.max(nowMs, span.startMs);
     if (wallMs < span.startMs) {
-      return { kind: 'skipped', span, offsetMs: 0, skippedFromMs: Math.max(wallMs, lastEnd ?? wallMs), skippedToMs: span.startMs };
+      // The whole hole is reported, not only the part after the requested moment.
+      return { kind: 'skipped', span, offsetMs: 0, skippedFromMs: lastEnd ?? wallMs, skippedToMs: span.startMs };
     }
     if (wallMs < end) return { kind: 'inside', span, offsetMs: wallMs - span.startMs };
     lastEnd = end;

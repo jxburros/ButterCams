@@ -96,7 +96,7 @@ describe('timeline map', () => {
     expect(inside).toMatchObject({ kind: 'inside', span: b, offsetMs: 60_000 - 40 });
     // Into the gap between c and d: go to d and say what was skipped.
     const at = T0 + 2 * H + 40 * 60_000;
-    expect(seekTarget(spans, at, now)).toMatchObject({ kind: 'skipped', span: d, skippedFromMs: at, skippedToMs: d.startMs });
+    expect(seekTarget(spans, at, now)).toMatchObject({ kind: 'skipped', span: d, skippedFromMs: c.endMs, skippedToMs: d.startMs });
     // Before the first recording.
     expect(seekTarget(spans, T0 - H, now)).toMatchObject({ kind: 'skipped', span: a, skippedFromMs: T0 - H });
     // After the last one.

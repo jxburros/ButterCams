@@ -146,7 +146,7 @@ export function TimelineTab() {
   const [failure, setFailure] = useState<string | null>(null);
   const [serverOffset, setServerOffset] = useState<number | null>(null);
   const [states, setStates] = useState<Record<string, PlayerState>>({});
-  const [playing, setPlaying] = useState(false);
+  const [wantPlaying, setPlaying] = useState(false);
   const [rate, setRate] = useState(1);
   const [muted, setMuted] = useState(true);
   const [selection, setSelection] = useState<TimeRange | null>(null);
@@ -243,6 +243,9 @@ export function TimelineTab() {
   const masterId = selected[0];
   const master = masterId ? states[masterId] : undefined;
   const playheadMs = master?.wallMs ?? null;
+  // The first camera drives the clock: when it has stopped, nothing is playing.
+  const stopped = master?.status === 'ended' || master?.status === 'error' || master?.status === 'unsupported' || master?.status === 'norecording';
+  const playing = wantPlaying && !stopped;
   const loaded = Object.keys(data).length > 0;
 
   // A new day or camera set: stop, nothing is at the playhead any more.
@@ -257,10 +260,6 @@ export function TimelineTab() {
     if (playing && day && playheadMs !== null && playheadMs >= day.endMs) setDate(dateOf(playheadMs));
   }, [playing, playheadMs, day]);
 
-  // The master reaching the end stops the group.
-  useEffect(() => {
-    if (master?.status === 'ended' || master?.status === 'error' || master?.status === 'unsupported') setPlaying(false);
-  }, [master?.status]);
 
   // ------------------------------------------------------------ controls
   const seek = useCallback(
@@ -279,7 +278,7 @@ export function TimelineTab() {
       setPlaying(false);
       return;
     }
-    if (playheadMs === null || master?.status === 'ended') {
+    if (playheadMs === null || master?.status === 'ended' || master?.status === 'norecording') {
       // Nothing chosen yet: start at the first recording of the day.
       const first = masterId ? data[masterId]?.spans[0] : undefined;
       if (first && day) seek(Math.max(first.startMs, day.startMs), true);
