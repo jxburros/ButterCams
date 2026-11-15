@@ -1,4 +1,4 @@
-# Ideas outside the v1 specification
+# Ideas outside the specification
 
 Rule 8 of the spec: do not add features that are not in it; write ideas here.
 Nothing in this file is implemented. Items already planned for v2–v4 in the
@@ -37,5 +37,15 @@ spec are not repeated.
 ## Web UI
 
 - Sort and filter the camera table; show cameras per worker.
-- A day overview per camera (24 bars with gaps) – planned for v2 (16.4).
+- A day overview per camera (24 bars with gaps) – part of the v2 timeline
+  (spec 16.5).
 - Dark theme.
+
+## Live view and playback
+
+- **WebRTC transport** for live view (lower latency, and it works on older
+  iPhones). Left out of v2 on purpose; see `docs/DECISIONS.md`, decision 36.
+- **HLS fallback** for browsers without Media Source Extensions.
+- **Reverse playback.** v2 has frame step back and scrubbing only.
+- **Snapshot wall for 25+ cameras**: one keyframe per camera every few
+  seconds instead of moving video.

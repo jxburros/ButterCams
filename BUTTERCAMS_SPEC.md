@@ -5,9 +5,11 @@
 > | Version | Name | Sections |
 > | --- | --- | --- |
 > | v1 | Core Recorder | 0–15 |
-> | v2 | Alerts, Clip Access and Motion Detection | 16 |
-> | v3 | AI Object Detection | 17 |
-> | v4 | Live View and Timeline Playback | 18 |
+> | v2 | Live View and Timeline Playback | 16 |
+> | v3 | Alerts, Clip Export and Motion Detection | 17 |
+> | v4 | AI Object Detection | 18 |
+>
+> **Status:** v1 is built. **v2 is the next phase of development**; `docs/V2_PLAN.md` describes how to build it. (Live view and timeline playback were originally planned last, as v4. They were moved forward, and redesigned so that they need nothing from the later versions; see `docs/DECISIONS.md`, decisions 35–43.)
 >
 > Sections 0, 1, 3, 19 and 20 apply to every version; Section 2 lists the v1 requirements. Each version builds on the ones before it and must keep every rule in Section 1. If something here is ambiguous, choose the option that best protects continuous recording, and record the decision in `docs/DECISIONS.md`.
 
@@ -31,7 +33,7 @@ ButterCams is a native Windows Server background service that records many RTSP 
 These rules override convenience. Any code that breaks one is a bug.
 
 1. **Recording comes first.** Nothing (UI, API, copying, retention, logging, future extensions) may block, slow or crash the recording path.
-2. **Never decode or re-encode video.** Video packets from the camera are written to file as-is. The only allowed transcoding is *audio* from G.711/G.726 to AAC (Section 6.3), because it is tiny and cheap.
+2. **Never decode or re-encode video.** Video packets from the camera are written to file as-is, and sent to viewers as-is (Section 16). The only allowed transcoding is *audio* from G.711/G.726 to AAC (Section 6.3), because it is tiny and cheap.
 3. **Isolate failures.** A misbehaving camera, a full disk or an offline share only affects its own part. One camera can never take down another.
 4. **Self-heal, then report.** Every failure in Section 9 has an automatic recovery and a visible status. Never require a human to restart anything.
 5. **Open formats.** Every recording plays in VLC and Windows Media Player with no ButterCams software.
@@ -72,6 +74,7 @@ These rules override convenience. Any code that breaks one is a bug.
 | Audio transcode | Pure-Go G.711 decoder plus an AAC encoder. If no reliable pure-Go AAC encoder exists, use a bundled `ffmpeg.exe` **for audio only**, run as a supervised side process per affected camera | Record the choice in `docs/DECISIONS.md` |
 | Web UI | TypeScript, React, Vite | Built to static files and embedded in the Go binary with `embed` |
 | Logging | Go `log/slog`, JSON output, rotating files | |
+| Live view and playback (v2) | Fragmented MP4 to the browser's Media Source Extensions: over a WebSocket for live, HTTP range requests for playback | No video decoding on the server, no extra ports, no bundled media server (Section 16) |
 | Installer | WiX v4 MSI (preferred) or Inno Setup | Section 13 |
 | Password hashing | `golang.org/x/crypto/argon2` (argon2id) | |
 | Secret storage | Windows DPAPI (`CryptProtectData`, machine scope) | Camera and share passwords |
@@ -235,7 +238,7 @@ Field rules:
 - `type`: `local` (fixed or attached drive path) or `unc` (`\\server\share\...`). **Reject mapped drive letters** (any drive letter whose type is `DRIVE_REMOTE`), with the message: "Mapped drives aren't visible to Windows services. Use the \\\\server\\share path instead."
 - The full RTSP URL is built as `rtsp://<host>:<port><path>`. The UI also accepts a full pasted URL and splits it into fields, extracting embedded credentials.
 - `transport`: `tcp` (default) or `udp`.
-- **Reserved for later versions; save and load them but do not use them in v1:** `subStreamPath`, `recordingMode` (v1 accepts only `"continuous"`), `extensions`.
+- **Reserved for later versions; save and load them but do not use them in v1:** `subStreamPath` (used from v2), `recordingMode` (v1 and v2 accept only `"continuous"`), `extensions`.
 - `allowedSubnets`: optional CIDR list. Empty means any address can reach the UI (still behind login).
 - One-hour segment length is a **constant** (`SegmentDuration = time.Hour`), not a config field.
 
@@ -348,7 +351,7 @@ The UI's "Test" button: create the folder if needed, write a 1 MB file, read it 
 - **Max age (`maxAgeDays`, optional):** delete segments older than this.
 - **Disk-full safety:** if the destination volume's free space drops below 2%, act as if the cap were hit, even when under `capGB`.
 - **Staging floor:** if staging free space drops below `max(minFreePercent, minFreeGB)` (whichever leaves more free space), delete the **oldest** staging files even if not yet copied, raise a **Critical** event naming every deleted file, and keep recording. Recording never stops for lack of space.
-- **Protected segments:** the schema includes `protected` (always false in v1, set by users from v2). Retention must skip protected rows.
+- **Protected segments:** the schema includes `protected` (always false in v1 and v2, set by users from v3). Retention must skip protected rows.
 - Only delete files in the index. If a file is already gone, mark the row `deleted` and move on.
 - Every delete is logged (path, size, reason).
 
@@ -586,18 +589,219 @@ v1 includes these so v2–v4 can be added **without changing the recorder**:
 - The `events` table and event JSON format; `source` accepts `ext:<name>`.
 - The `protected` column on segments.
 - The guardian's process supervision is generic: workers and the mover are both "supervised processes" defined by a struct (executable, args, heartbeat limit, restart policy), so extension processes can be added later with the same code.
-- The worker exposes a packet fan-out interface per camera (a function that registers a reader receiving packets on a **bounded channel that drops when full**). In v1 only the file writer uses it. **The recorder must never block on a reader.**
+- The worker exposes a packet fan-out interface per camera (a function that registers a reader receiving packets on a **bounded channel that drops when full**). In v1 only the file writer uses it; v2 adds the loopback restream (16.3). **The recorder must never block on a reader.**
 - API versioned under `/api/v1`.
 
 ---
 
-## 16. Version 2 — Alerts, Clip Access and Motion Detection
+## 16. Version 2 — Live View and Timeline Playback
 
-v2 adds three things on top of v1: alerts when something breaks, easy access to recordings, and motion detection. All three run beside the recorder. If any v2 component fails, recording continues exactly as in v1.
+v2 lets people watch: live video from every camera, and recorded video on a timeline, in the browser, from the same page and login as the settings. It is the next phase of development after v1. The build order, the code changes and the tests are in `docs/V2_PLAN.md`.
 
-### 16.1 Extension host
+Viewers only read. They never write to the core, and they can never slow it.
 
-Every v2+ feature that processes video or sends messages runs as a **supervised extension process**, managed by the guardian with the same supervision code as workers (Section 15).
+### 16.1 Principles
+
+1. **The server never decodes video.** Rule 2 holds in v2. The server repackages the camera's packets (live) or sends byte ranges of the recorded files (playback). Decoding happens in the browser.
+2. **One port, one login.** Live video and playback use the existing HTTPS port, session cookie and roles. There are no extra ports, no second web server and no browser plug-in.
+3. **Viewing is a separate process.** Everything that serves video to browsers runs in one supervised process, the **media process**. If it crashes, hangs or is overloaded, recording, copying and the settings page carry on.
+4. **Nothing runs when nobody watches.** Stream sources start on the first viewer and stop 30 s after the last one leaves. With no viewers, v2 costs the server nothing.
+5. **Nothing extra to install.** No go2rtc, no ffmpeg, no CGO. The media process is `buttercams.exe media`.
+
+### 16.2 Media process
+
+A third process role, supervised by the guardian with the same code as workers and the mover (Section 15):
+
+```
+buttercams.exe media        # live view and playback server (spawned by the guardian)
+```
+
+```
+ Cameras ─ main ─► Recorder workers ─► files ─────────────────────────┐
+    │                  │ loopback restream (on demand, main only)     │ read-only
+    │                  ▼                                              ▼
+    └─── sub ───►  Media process: stream hub ─ live muxer ─ playback file server
+                       ▲ loopback HTTP + token
+ Browser ─HTTPS─►  Guardian: login, permissions, timeline from the index, reverse proxy
+```
+
+- Listens on `127.0.0.1` only, on a port it chooses, and reports the port to the guardian. Every request must carry a token the guardian generated for that run of the process.
+- The guardian checks the session, the role and the camera permission, then reverse-proxies the request. The media process trusts only the guardian.
+- It never opens the database and never writes to staging, destinations or the data root. For playback, the guardian resolves a segment to its file paths (nearest copy first, as for downloads) and passes them with the proxied request.
+- Heartbeat every 5 s; killed and restarted after 15 s without one. Restarted when it uses more than 1 GB of memory. A restart at any moment is safe: viewers reconnect.
+- Runs at **below-normal process priority**, so when the CPU is busy the recorders win.
+- Receives the camera list (with decrypted-on-use credentials for sub streams) and each worker's restream address from the guardian over stdin, like a worker receives its cameras.
+
+### 16.3 Stream sources
+
+| Stream | Where the media process gets it | Notes |
+| --- | --- | --- |
+| **Sub** | Its own RTSP connection to the camera's `subStreamPath` | The recorder workers are not involved at all. Same connect timeout, stall detection and backoff as Section 6.1. Never recorded |
+| **Main** | The worker's **loopback restream** | Never a second connection to the camera: many cameras allow few sessions, and the hourly rollover needs one |
+
+**Loopback restream (in each worker).** A loopback-only RTSP server, `rtsp://127.0.0.1:<port>/<camera-id>`, fed by the packet fan-out of Section 15.
+
+- It registers a fan-out reader only while a client is connected, and unregisters when the client leaves.
+- One client per RTSP session of the camera (the media process, which fans out to all viewers itself). A camera has two sessions only during the hourly rollover, so at most two clients. Further connections are refused.
+- Accepts connections from 127.0.0.1 only and requires the token the guardian gave the worker.
+- The reader's channel is bounded and drops when full. Dropped packets are counted and reported in `camera_stats`. **The recorder never waits.**
+- **No freeze at the hourly rollover.** The restream serves each RTSP session of a camera as its own stream; `rtsp://…/<camera-id>` always describes the newest. When a camera opens its second session (6.5), the worker reports it (`restream_session`), and the media process connects to it while still playing the old one. It moves viewers to the new session at that session's first keyframe, then drops the old one: make-before-break, like the recorder, and decided in the media process so the worker needs no switching logic. If the notice does not arrive, or the camera is single-session or reconnects after a failure, the old stream simply ends and the media process connects again; live view then resumes at the next keyframe.
+- Every goroutine of the restream recovers from panics; a failure in it is logged and disables the restream for that camera until the next session. It can never end a recording.
+- `live.mainStream: false` (16.8) turns the restream off entirely.
+
+**Stream hub (in the media process).** One source per camera and stream, shared by all its viewers. The hub keeps the packets since the last keyframe, so a new viewer gets a picture at once instead of waiting for the next keyframe.
+
+### 16.4 Live view
+
+| Requirement | Detail |
+| --- | --- |
+| Transport | Fragmented MP4 over a WebSocket, played with Media Source Extensions (MSE; `ManagedMediaSource` on iPhone) |
+| Browsers | Chrome on Windows and Android, Safari on iPhone (iOS 17.1 or later) and Mac. Edge and Firefox are expected to work but are not acceptance targets |
+| Phones | The Live page and the timeline work by touch on a phone-size screen. The grid shows at most 4 tiles per page there (swipe for more); video plays inline and muted without a tap |
+| Muxing | One fragment per video frame, so the server adds no delay. Same muxer code as the recorder |
+| Latency | Under 1 s on the LAN. The player keeps itself at the live edge: it speeds up slightly when it is more than 1 s behind and jumps when more than 3 s behind, and it trims its buffer, so delay never grows |
+| Grid | Layouts 1, 4, 9 and 16 and saved views (16.6), using sub streams. Sub streams are expected to be H.264. A camera without a sub stream uses its main stream in the grid, and the camera form recommends setting one |
+| Single view | Click a tile for the main stream, full screen available |
+| H.265 | Played where the browser can (`MediaSource.isTypeSupported`). Otherwise the tile falls back to the sub stream if that is H.264. Otherwise it says which browsers can play it. The server never transcodes video |
+| Audio | In single view only, muted by default. AAC and Opus are passed through; G.711/G.726 are converted to AAC with the recorder's converter (Section 6.3), only while someone is watching |
+| Slow viewers | Each viewer has a bounded queue. When it overflows, the queue is emptied and the viewer resumes at the next keyframe. A slow viewer affects nobody else |
+| Hidden tiles | The page closes the stream of every tile that is not visible (other page of the grid, background tab) and reopens it when it is shown |
+| Not available | When the source is not available (camera offline, no sub stream) the tile shows the camera's recording state and reason, as the v1 Live page does, and retries by itself |
+| Limits | 4 streams per camera in flight per user session; 200 media connections in total. Beyond that the server answers 503 and the tile says so |
+
+WebSocket protocol (`GET /api/v1/live/{camera}/{main|sub}?audio=0|1`): the server sends a text message `{"type":"init","mime":"video/mp4; codecs=\"…\"","width":…,"height":…}` followed by binary messages: the initialization segment, then fragments. A new `init` message follows whenever the stream's parameters change. `{"type":"state","state":"waiting","message":"…"}` is sent while there is no video. The client sends nothing. The handler checks the `Origin` header.
+
+### 16.5 Timeline playback
+
+The **Recordings** page becomes the timeline. The v1 file list stays as a second tab ("Files").
+
+**Timeline.**
+
+- One camera (or up to four, see below) and a date. Recorded spans, gaps and recorder events (stalls, reconnects, clock changes) are drawn in different colours, each with a text label on hover. Zoom from 24 hours down to 1 minute.
+- The hour currently being recorded is on the timeline and can be played up to about 5 s behind live.
+- Days with a clock change show 23 or 25 hours correctly.
+- Motion events and AI labels are added to the same timeline by v3 and v4.
+
+**Playback.**
+
+- Click or drag anywhere to play from that moment. Playback crosses hour files with no visible seam.
+- The browser builds the continuous stream itself. For each file it asks for a small **index** (the initialization segment's byte range, and the time and byte range of every keyframe-aligned chunk), then fetches chunks with ordinary HTTP range requests and appends them through MSE. The server holds no playback state.
+- Files that follow each other without a gap are joined end to start on the player's timeline by their exact media durations; the wall-clock time shown is mapped per file. A real gap is skipped, and the player says what was skipped ("No recording 09:12:04 – 09:14:31").
+- When the next file has a different codec, resolution or set of tracks, the player starts a new media source at the boundary. A short blink is acceptable there.
+- Speeds 0.5×, 1×, 2×, 4×, 8× and 16×. Up to 4× (and above when the browser keeps up) every frame is played. Otherwise the player switches to **keyframe-only** mode: the server returns fragments holding just the first frame of each chunk, with its duration stretched to the chunk's. The same mode serves fast scrubbing while dragging.
+- Frame step forward and back while paused.
+- Audio plays at 0.5× to 2×.
+- **Synchronized playback** of up to 4 cameras: one shared wall clock, each player kept within 150 ms of it. A camera with no recording at that moment says so and joins again at its next span.
+- **Thumbnails on hover:** the server returns a tiny, complete MP4 holding one keyframe; the browser decodes it and caches the picture. The server decodes nothing.
+- **Download** the hour file under the cursor (the v1 endpoint). Trimmed exports of a range and protection from retention come with v3 (17.4); the timeline's range selection is built so that export plugs into it.
+- H.265 recordings play where the browser can play H.265; otherwise the player says so and offers the download. So that Safari can play them, H.265 files are written with the `hvc1` sample entry from v2 on (all parameter sets in the file header, which the recorder already guarantees by starting a new file when they change).
+
+**Server side.**
+
+- Closed files: the index is read from the file's `mfra` box (one small read at the end of the file).
+- The file being written has no `mfra` yet: its index is built by walking the fragment headers, kept in memory and extended on each request.
+- Indexes are cached in memory (least recently used, bounded).
+- Files are opened read-only with full sharing **including delete** (16.9).
+
+### 16.6 Access
+
+- **Roles:** Viewer and Admin can use live view and the timeline.
+- **Per-user camera permissions:** a Viewer account can be limited to a list of cameras (default: all). The limit applies everywhere a camera appears: camera list, live view, timeline, segments, downloads, events and the event stream. Admins always see every camera.
+- **Saved views** move from the browser to the server. Every user has **their own** views, which only they see and edit. Admins can also keep **shared** views, which every user sees and only Admins edit; an Admin can share one of their own views with one click. A user sees only the cameras of a shared view that they are allowed to see. Views saved in a browser by v1 are offered for import into the user's own views once.
+- Stream starts and playback starts are not audited (they are too frequent). Downloads are audited from v3 (17.4).
+
+### 16.7 Remote access
+
+- No built-in relay and no internet-facing ports by default.
+- Because live view and playback use only the HTTPS port, anything that carries that port carries them. `docs/OPERATIONS.md` documents access over Tailscale or WireGuard.
+
+### 16.8 Configuration, data and API changes
+
+`config.json` → `schemaVersion: 2`, with a migration from v1 that adds:
+
+```json
+"live": {
+  "enabled": true,
+  "mainStream": true,
+  "views": [
+    {"id": "view-entrances", "name": "Entrances", "layout": 4, "cameraIds": ["front-door", "loading-dock"]}
+  ]
+}
+```
+
+- `live.enabled: false` stops the media process and hides live view and playback. `live.mainStream: false` keeps the workers' restream off (grid and single view then use sub streams only).
+- `subStreamPath` (reserved in v1) is now used. The camera form gets a "Sub stream path" field, and **Test connection** also tests the sub stream and reports its codec and resolution. It warns when the sub stream is H.265 ("Set the sub stream to H.264 so every browser can show the grid") or larger than 1280×720.
+- `live.views` holds the **shared** views. `users.json`: each user gains `cameras` (`null` = all cameras, or a list of camera ids) and `views` (that user's own views, same shape, at most 50).
+- The database is unchanged.
+
+New messages (Section 4.4): guardian → worker `restream` (enable or disable, token); worker → guardian `restream_ready` (port) and `restream_session` (camera, new session); `camera_stats` gains `restreamDropped`. Guardian ↔ media: `assign_media` (cameras, restream addresses, token), `source_changed` (the forwarded `restream_session`), `media_ready` (port), `heartbeat`, `media_stats` (viewers and sources per camera, queue overflows), `event`.
+
+New API endpoints under `/api/v1` (existing ones do not change):
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/live/{camera}/{main\|sub}` | WebSocket live stream (16.4) |
+| GET | `/live/views` | `{"shared": […], "mine": […]}` |
+| PUT | `/live/views/mine` | Replace the signed-in user's own views |
+| PUT | `/live/views/shared` | Replace the shared views (Admin) |
+| GET | `/timeline?camera=&from=&to=` | Recorded spans (segment id, start, end, gap flag, codecs, open flag) and recorder events in the range, from the index |
+| GET | `/segments/{id}/play/index` | Playback index of one file: MIME type with codecs, initialization range, chunk list `[startMs, durationMs, offset, size]`, `open` flag |
+| GET | `/segments/{id}/play/data` | The file's bytes, range requests only |
+| GET | `/segments/{id}/play/keyframes?from=&to=` | Keyframe-only fragments for a time range |
+| GET | `/segments/{id}/play/thumb?t=` | One keyframe as a complete small MP4 |
+
+Additions to existing objects: `subStreamPath` in CameraInput; `sub` results in CameraTestResult; `cameras` in users; `media` (state, viewers, sources) in `GET /system` and on the Dashboard. The `/live/…` and `/play/…` routes are long-lived like downloads and are exempt from the 30 s handler timeout; the guardian gives the media process 2 s to accept a proxied request and otherwise answers `503 media_unavailable`.
+
+### 16.9 Protecting the recorder
+
+These apply Rule 1 to v2. Each has a test in `docs/V2_PLAN.md`.
+
+1. **Process isolation.** All viewer work is in the media process (16.2), at below-normal priority, with a memory limit.
+2. **The restream is the only v2 code inside a worker.** It is idle unless watched, serves one client per camera session, drops instead of waiting, recovers from its own panics and can be switched off (16.3).
+3. **Fan-out packets are read-only.** A reader that needs to change a packet copies it first.
+4. **Shared file access.** Every read of a recording by the guardian or the media process (playback, thumbnails, downloads, including the v1 download) opens the file with read, write **and delete** sharing. The worker's rename of `.part.mp4` at close, the mover's deletion of the staging copy and retention's deletes must never fail because someone is watching. The media process closes file handles that have been idle for 30 s, so a deleted file's space is released promptly.
+5. **Read budget.** Playback reads from the volume that holds staging share one budget (default 40 MB/s in total). When it is used up, viewers load more slowly; recorders keep writing at full speed.
+6. **The guardian only forwards.** It copies bytes between the browser and the media process without buffering, limits the number of media connections, and still never calls into a worker synchronously.
+7. **Sub-stream connections belong to the media process.** A camera that misbehaves on its sub stream cannot disturb its recording.
+
+### 16.10 v2 performance targets
+
+| Measure | Target |
+| --- | --- |
+| Live latency on the LAN | Under 1 s, and not growing over 8 hours |
+| Time to first picture, live | Under 2 s for a sub stream that is already open, under 5 s when it must be connected |
+| Time to first picture after a seek | Under 1 s from a local copy, under 2 s from a network share |
+| 16 live tiles for 8 hours | No growing delay and flat browser memory in a mid-range laptop browser |
+| 4 live tiles on a phone for 1 hour | No growing delay, on a mid-range Android phone and an iPhone |
+| Main-stream live view at the hourly rollover | No freeze longer than 0.5 s on cameras that allow two sessions |
+| Media process, 60 sub streams and 20 viewers | Under 5% of an 8-core CPU, under 500 MB |
+| Recorder CPU and memory | No measurable change from v1 with 20 viewers watching and scrubbing |
+
+### 16.11 v2 acceptance criteria
+
+- [ ] Seamless playback across 24 consecutive hour files.
+- [ ] 16 live tiles run for 8 hours with latency under 1 s at the end.
+- [ ] 20 concurrent viewers, live and scrubbing, cause no recording loss and no change in recorder CPU or memory.
+- [ ] Killing the media process repeatedly during live viewing does not affect recording, and live view returns within 10 s.
+- [ ] A media process pinned at 100% CPU does not slow any recorder.
+- [ ] On Windows, the hourly rollover, staging cleanup and retention all succeed while the affected files are being played.
+- [ ] The hour being recorded plays to within 5 s of live.
+- [ ] A viewer limited to some cameras cannot reach any other camera through any endpoint.
+- [ ] Timeline and playback are correct on both clock-change days.
+- [ ] Live view and playback work in Chrome on Windows, Chrome on Android and Safari on an iPhone (iOS 17.1 or later), on the LAN and through Tailscale.
+- [ ] A main-stream live view left open across the top of the hour shows no visible freeze on a camera that allows two sessions.
+- [ ] One user's own views are invisible to other users; a shared view shows each user only the cameras they may see.
+- [ ] Garrett's camera models play live (main and sub) and from the timeline, including audio.
+
+---
+
+## 17. Version 3 — Alerts, Clip Export and Motion Detection
+
+v3 adds three things: alerts when something breaks, trimmed exports and protection of recordings, and motion detection. All three run beside the recorder. If any v3 component fails, recording continues exactly as in v1.
+
+### 17.1 Extension host
+
+Every v3+ feature that processes video or sends messages runs as a **supervised extension process**, managed by the guardian with the same supervision code as workers (Section 15).
 
 - Each extension has a manifest, `extensions\<name>\manifest.json`:
 
@@ -620,14 +824,14 @@ Every v2+ feature that processes video or sends messages runs as a **supervised 
 - Each extension's settings are edited on a page generated from its `settingsSchema` (JSON Schema), so new extensions don't need hand-built settings pages.
 - Extensions may never write to staging, destinations or the database directly.
 
-### 16.2 Local restream
+### 17.2 Streams for extensions
 
-- Each recorder worker re-serves its cameras' streams on a loopback-only RTSP server (`rtsp://127.0.0.1:<port>/<camera-id>/main` and `/sub`), so extensions never open extra connections to cameras.
-- When a camera has `subStreamPath` set, its worker also connects to the sub stream. The sub stream is **never recorded**.
-- Each restream reader receives packets through the bounded, drop-when-full fan-out from Section 15. Dropped packets are counted and shown per reader. The recorder never waits.
-- The restream accepts connections only from 127.0.0.1 and requires the extension's token.
+- Extensions read streams from the v2 stream hub (16.3), never from cameras and never from the workers. The media process gains a loopback-only RTSP output, `rtsp://127.0.0.1:<port>/<camera-id>/main` and `/sub`, which accepts connections only from 127.0.0.1 and requires the extension's token.
+- A sub stream that an enabled extension reads is kept connected permanently instead of on demand.
+- Each reader has a bounded, drop-when-full queue. Dropped packets are counted and shown per reader.
+- The recorder workers do not change.
 
-### 16.3 Alerts
+### 17.3 Alerts
 
 A supervised process, `buttercams-alerts.exe`, subscribes to the guardian's event stream.
 
@@ -642,23 +846,21 @@ A supervised process, `buttercams-alerts.exe`, subscribes to the guardian's even
 | Test | "Send test" button per channel |
 | Storage | Channel settings in `config.json` under `alerts`, secrets encrypted with DPAPI |
 
-Message format: subject or title `ButterCams [<server>] <severity>: <short reason>`, body with camera, time, details and a link to the settings page.
+Message format: subject or title `ButterCams [<server>] <severity>: <short reason>`, body with camera, time, details and a link to the camera's timeline at that moment.
 
-### 16.4 Clip access
+### 17.4 Clip export and protection
 
-New features on the **Recordings** page:
+Browsing and in-browser playback exist since v2 (16.5). v3 adds, on the timeline:
 
-- **Browse:** a calendar and camera picker. A day shows its 24 hour files as a bar with gaps marked.
-- **Preview:** play a file in the browser through an HTTP endpoint that supports range requests. H.264 plays natively. For H.265, play when the browser supports it, otherwise show the download link.
-- **Trim and export:** pick a start and end time spanning one or more hour files. Produce one MP4 by cutting at the nearest keyframes and concatenating, with no re-encoding. Exports run in a supervised process, are written to `<dataRoot>\exports\`, expire after 7 days by default, and are listed with a download link.
-- **Protect:** mark a segment (or a time range) as protected, with an optional note. Retention skips protected segments. Protected bytes show separately against each destination's cap, with a warning when they exceed 50% of it.
+- **Trim and export:** select a start and end time spanning one or more hour files. Produce one MP4 by cutting at the nearest keyframes and concatenating, with no re-encoding. Exports run in a supervised process, are written to `<dataRoot>\exports\`, expire after 7 days by default, and are listed with a download link.
+- **Protect:** mark a segment (or a time range) as protected, with an optional note. Retention skips protected segments. Protected bytes show separately against each destination's cap, with a warning when they exceed 50% of it. Protected spans are marked on the timeline.
 - **Audit log:** every export, download, protect and unprotect is recorded in the `events` table with the user.
 
-New API endpoints under `/api/v1`: `POST /exports`, `GET /exports`, `GET /exports/{id}/download`, `POST /segments/{id}/protect`, `DELETE /segments/{id}/protect`, `GET /segments/{id}/play` (range-capable).
+New API endpoints under `/api/v1`: `POST /exports`, `GET /exports`, `GET /exports/{id}/download`, `POST /segments/{id}/protect`, `DELETE /segments/{id}/protect`.
 
-### 16.5 Motion detection
+### 17.5 Motion detection
 
-A supervised Go extension, `buttercams-motion.exe`, reading sub streams from the local restream.
+A supervised Go extension, `buttercams-motion.exe`, reading sub streams from the stream hub.
 
 | Requirement | Detail |
 | --- | --- |
@@ -672,7 +874,7 @@ A supervised Go extension, `buttercams-motion.exe`, reading sub streams from the
 | Output | `motion.start` and `motion.end` events with camera, time, peak area, bounding box and a JPEG snapshot saved under `<dataRoot>\snapshots\` |
 | Snapshot retention | 30 days by default, capped at 10 GB |
 
-### 16.6 Recording modes
+### 17.6 Recording modes
 
 `recordingMode` gains two values:
 
@@ -684,19 +886,25 @@ A supervised Go extension, `buttercams-motion.exe`, reading sub streams from the
 
 Safety rule: if the motion extension is down, not heartbeating, or the camera's sub stream is unavailable, every `motion_only` camera switches to continuous recording until motion is healthy again, and an event is logged.
 
-### 16.7 Data and API changes
+### 17.7 Motion on the timeline, and event search
 
-- `config.json` → `schemaVersion: 2` with a migration from v1: adds `alerts`, motion settings under each camera's `extensions.motion`, and the new recording modes.
+- Motion events are drawn on the v2 timeline in their own colour.
+- **Event search:** filter by camera, time range and event type. Results are shown as snapshot thumbnails; clicking one opens the timeline at that moment.
+
+### 17.8 Data and API changes
+
+- `config.json` → `schemaVersion: 3` with a migration from v2: adds `alerts`, motion settings under each camera's `extensions.motion`, and the new recording modes.
 - `segments` gains `motion_flag INTEGER NOT NULL DEFAULT 0`. New table `exports (id, user, camera_id, start_ts, end_ts, path, bytes, created_ts, expires_ts)`.
 - New event types: `motion.start`, `motion.end`, `alert.sent`, `alert.failed`, `export.created`, `segment.protected`, `segment.unprotected`.
+- `GET /timeline` also returns motion events and protected spans.
 
-### 16.8 v2 performance targets
+### 17.9 v3 performance targets
 
 - Motion analysis of 60 sub streams at 5 fps: under 25% CPU on the target server with hardware decode.
 - Motion event within 1 s of motion starting.
-- Recorder CPU and memory unchanged from v1 with every v2 component running.
+- Recorder CPU and memory unchanged from v1 with every v3 component running.
 
-### 16.9 v2 acceptance criteria
+### 17.10 v3 acceptance criteria
 
 - [ ] Killing the alerts, export or motion process repeatedly causes no recording loss; each is restarted automatically.
 - [ ] A motion process pinned at 100% CPU does not slow any recorder.
@@ -709,11 +917,11 @@ Safety rule: if the motion extension is down, not heartbeating, or the camera's 
 
 ---
 
-## 17. Version 3 — AI Object Detection
+## 18. Version 4 — AI Object Detection
 
-v3 confirms motion with object detection (person, vehicle, animal, package) in a Python extension, turning motion markers into labelled events. It uses the v2 extension host, restream and event channel with no change to the recorder.
+v4 confirms motion with object detection (person, vehicle, animal, package) in a Python extension, turning motion markers into labelled events. It uses the v3 extension host and event channel and the v2 stream hub, with no change to the recorder.
 
-### 17.1 AI extension
+### 18.1 AI extension
 
 | Requirement | Detail |
 | --- | --- |
@@ -721,7 +929,7 @@ v3 confirms motion with object detection (person, vehicle, animal, package) in a
 | Runtime | ONNX Runtime, choosing CUDA, then DirectML, then CPU at startup and reporting which is active |
 | Models | YOLO-family ONNX object detection models. Ship one default general model; users can add custom `.onnx` models with a `labels.txt` |
 | Trigger | By default, on each `motion.start`: analyze 3 frames spread over the first 2 s, then 1 frame per second until `motion.end` (max 30 per event). Optional continuous mode per camera at a set rate |
-| Frames | Sub-stream frames from the restream; optionally fetch a main-stream keyframe for small or distant objects |
+| Frames | Sub-stream frames from the stream hub; optionally fetch a main-stream keyframe for small or distant objects |
 | Output | `object.detected` events: camera, time, label, confidence, bounding box, snapshot with boxes drawn, and the `motion.start` event id they belong to |
 | Filters per camera | Labels to keep, minimum confidence (default 0.5), include/exclude zones, minimum box size |
 | Stationary objects | Track objects across frames by box overlap; ignore objects that haven't moved over 3 consecutive detections (parked cars) |
@@ -729,83 +937,34 @@ v3 confirms motion with object detection (person, vehicle, animal, package) in a
 | GPU memory | Configurable limit; on out-of-memory, fall back to CPU and raise a Warning |
 | Remote mode | Optional: send frames to a ButterCams AI extension on another machine over HTTPS with a shared token |
 
-### 17.2 Model management
+### 18.2 Model management
 
 - **Models** page: list installed models, upload a new one, set the default and per-camera models, and test a model on a chosen snapshot with boxes shown.
 - Switching models takes effect without restarting the service.
 
-### 17.3 Using AI results
+### 18.3 Using AI results
 
-- Alerts (16.3) can filter by label, for example "person on Driveway only".
+- Alerts (17.3) can filter by label, for example "person on Driveway only".
 - `continuous_marked` and `motion_only` modes can require an AI-confirmed label instead of raw motion (setting per camera).
-- Event list and Recordings page show labels and snapshots.
+- The timeline (16.5) shows AI labels in their own colour. Event search (17.7) gains filters for label and minimum confidence, and shows the labelled snapshots.
 
-### 17.4 Data changes
+### 18.4 Data changes
 
-- `config.json` → `schemaVersion: 3`: adds `extensions.ai` per camera and a top-level `ai` section (runtime, models, remote mode).
+- `config.json` → `schemaVersion: 4`: adds `extensions.ai` per camera and a top-level `ai` section (runtime, models, remote mode).
 - New table `detections (id, event_id, camera_id, ts, label, confidence, x, y, w, h, snapshot_path, model)` with an index on `(camera_id, ts)` and `(label, ts)`.
 
-### 17.5 v3 performance targets
+### 18.5 v4 performance targets
 
 - Under 300 ms per frame on an RTX 4060 Ti-class GPU with the default model.
 - No queue drops at normal activity across 60 cameras on that GPU.
 - Recorder CPU and memory unchanged from v1.
 
-### 17.6 v3 acceptance criteria
+### 18.6 v4 acceptance criteria
 
 - [ ] Removing the GPU or its driver falls back to CPU (or disables AI with a Warning) with no recording impact.
 - [ ] A model that crashes or loads slowly is restarted without affecting motion events or recording.
 - [ ] Person-detection precision and recall measured on Garrett's day and night footage meet targets agreed with him.
 - [ ] Model changes apply without a service restart.
-
----
-
-## 18. Version 4 — Live View and Timeline Playback
-
-v4 adds live viewing and timeline playback in the browser. Viewers only read from the core; they never write to it or slow it.
-
-### 18.1 Live view
-
-| Requirement | Detail |
-| --- | --- |
-| Engine | go2rtc, bundled and run as a supervised extension, reading from the local restream (never directly from cameras) |
-| Transport | WebRTC to the browser; MSE/HLS fallback where WebRTC fails |
-| Grid | Layouts 1, 4, 9, 16 and custom saved groups, using sub streams |
-| Single view | Click a tile for the main stream full-screen |
-| Latency | Under 1 s on the LAN |
-| H.265 | Played natively where the browser supports it; otherwise the H.264 sub stream |
-| Audio | Main-stream audio in single view, muted by default |
-| Access | Viewer and Admin roles; per-user camera permissions |
-
-### 18.2 Timeline playback
-
-- A timeline per camera: recorded spans, gaps, motion events and AI labels in different colours, with zoom from 24 hours down to 1 minute.
-- Click or drag anywhere to play from that moment. Playback crosses hour files with no visible seam (the server serves a continuous fMP4 stream across segments).
-- Speeds 0.5× to 16×, frame step forward and back, and keyframe-only fast scrubbing.
-- Synchronized playback of up to 4 cameras at the same moment.
-- Export a range directly from the timeline using the v2 export process.
-- Thumbnails on hover, generated from keyframes on demand and cached.
-
-### 18.3 Event search
-
-- Filter by camera, time range, event type, AI label and minimum confidence.
-- Results as snapshot thumbnails; clicking one opens the timeline at that moment.
-
-### 18.4 Remote access
-
-- No built-in relay and no internet-facing ports by default.
-- `docs/OPERATIONS.md` documents access over Tailscale or WireGuard.
-
-### 18.5 v4 performance targets
-
-- 16 live tiles for 8 hours in a mid-range laptop browser with no growing delay.
-- Live and playback viewers have no measurable effect on recorder CPU or memory.
-
-### 18.6 v4 acceptance criteria
-
-- [ ] Seamless playback across 24 consecutive hour files.
-- [ ] Killing go2rtc during live viewing doesn't affect recording, and live view returns within 10 s.
-- [ ] 20 concurrent viewers cause no recording loss.
 
 ---
 
@@ -823,21 +982,24 @@ buttercams/
   internal/api/                   # HTTP server, auth, handlers
   internal/winsvc/                # service, job objects, event log, WNet
   internal/audio/                 # G.711/G.726 → AAC
-  internal/exthost/               # v2: extension manifests, supervision, loopback API
-  internal/restream/              # v2: loopback RTSP restream
-  extensions/alerts/              # v2 (Go)
-  extensions/export/              # v2 (Go)
-  extensions/motion/              # v2 (Go)
-  extensions/ai/                  # v3 (Python)
-  extensions/live/                # v4 (go2rtc packaging and config)
+  internal/stream/                # v2: RTP → samples, shared by the recorder and the media process
+  internal/restream/              # v2: loopback RTSP restream inside a worker
+  internal/media/                 # v2: media process (stream hub, live muxer, playback file server)
+  internal/exthost/               # v3: extension manifests, supervision, loopback API
+  extensions/alerts/              # v3 (Go)
+  extensions/export/              # v3 (Go)
+  extensions/motion/              # v3 (Go)
+  extensions/ai/                  # v4 (Python)
   web/                            # React + Vite UI (built output embedded)
-  installer/                      # WiX project
+  web/src/player/                 # v2: live and timeline players (MSE)
+  installer/                      # installer project
   test/simulator/                 # camera simulator
   test/chaos/                     # chaos scripts
   docs/
     DECISIONS.md                  # choices made during the build
     IDEAS.md                      # out-of-scope ideas
     OPERATIONS.md                 # admin guide (install, add camera, recover)
+    V2_PLAN.md                    # how v2 is built: order, code changes, tests
   AGENTS.md                       # points agents at this spec
 ```
 
@@ -852,3 +1014,8 @@ buttercams/
 - **Staging:** the local folder every camera writes to first.
 - **Destination:** where finished hour files are copied (local, attached or network share).
 - **Make-before-break:** opening the new stream before closing the old one, so there's no gap.
+- **MSE (Media Source Extensions):** the browser feature that lets a page feed fMP4 pieces to a video element. It is how live view and playback work without a plug-in.
+- **Media process:** the supervised process that serves live video and playback to browsers (Section 16.2).
+- **Restream:** a worker's loopback-only copy of a camera's main stream, read by the media process.
+- **Stream hub:** the part of the media process that holds one connection per stream and shares it among viewers.
+- **Live edge:** the newest video a live player has received. The player stays close to it.

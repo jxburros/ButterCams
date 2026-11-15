@@ -1,4 +1,4 @@
-# Decisions made while building ButterCams v1
+# Decisions made while building ButterCams
 
 The build specification (`BUTTERCAMS_SPEC.md`) is the source of truth. Where
 it left a choice open, was ambiguous, or could not be followed to the letter,
@@ -160,7 +160,7 @@ leave the recording state within a second (rule 6).
 
 The fan-out of spec 15 carries the raw RTP packets with their timing; the
 file writer (the only reader in v1) depacketizes them itself. This is what
-the v2 restream needs, so nothing has to change in the recorder later. The
+the restream (spec 16.3) needs, so nothing has to change in the recorder later. The
 file writer's queue holds 4,096 packets; if it ever overflows (a disk that
 stopped), the dropped packets are counted, a warning is raised, and the
 writer resynchronizes at the next keyframe.
@@ -325,14 +325,14 @@ the page loads nothing from the internet (spec section 3).
 
 ### 28b. Live page before live video
 
-The owner asked for the Live page now. It shows the spec 18.1 grid (layouts
+The owner asked for the Live page now. It shows the live view grid (layouts
 1, 4, 9 and 16, saved camera views, click a tile for one camera), but without
-video: v4's go2rtc engine and the local restream do not exist yet, so each
+video: the live engine and the local restream do not exist yet, so each
 tile shows the camera's recording state from `GET /cameras`, refreshed every
 5 s, and says plainly that live video is not in this version. Saved views are
 kept in the browser's `localStorage` (one list per browser), so v1 needs no
-change to `config.json` or the API. When v4 adds video, the views can move to
-the server and the tiles can play the sub stream.
+change to `config.json` or the API. When v2 adds video (spec 16), the views
+move to the server and the tiles play the sub stream.
 
 ## Installer and tooling
 
@@ -374,6 +374,113 @@ stream, drop its sessions or refuse new ones.
 The hour length is a constant (`naming.SegmentDuration`), as required. The
 worker's wall clock is injectable in tests only, so the rollover tests start
 "thirteen seconds before the hour" instead of waiting for one.
+
+## Roadmap and v2 design
+
+These were decided when live view and timeline playback were made the next
+phase. Nothing in this section is built yet; `docs/V2_PLAN.md` has the build
+order.
+
+### 35. Live view and timeline playback are v2
+
+The spec planned them last (v4), on top of the extension host, the restream
+and the export process of the alerts-and-motion version. The owner wants to
+watch cameras before anything else, and the Live page already exists without
+video (decision 28b). The versions are now: v2 live view and timeline
+playback (spec 16), v3 alerts, clip export and motion detection (17), v4 AI
+object detection (18). Section numbers 16–18 changed with them.
+
+What moved with it: browsing and in-browser preview of recordings (old "clip
+access") are part of the v2 timeline. What stayed behind: trimmed exports and
+protection (v3), event search (v3, with the first events worth searching),
+AI filters (v4). v2 needs nothing from v3 or v4.
+
+### 36. Fragmented MP4 over MSE instead of go2rtc and WebRTC
+
+The spec named go2rtc with WebRTC and an MSE/HLS fallback.
+
+**Choice:** the media process sends fragmented MP4 over a WebSocket (live)
+and byte ranges over HTTP (playback); the browser plays both through Media
+Source Extensions. No go2rtc, no WebRTC.
+
+**Why:**
+
+- The recorder already depacketizes RTP and writes fMP4 with code ButterCams
+  owns. Live view is that muxer with one fragment per frame.
+- One port, one certificate, one login. WebRTC needs UDP ports, a firewall
+  rule and address negotiation, and does not pass through a plain HTTPS
+  tunnel; go2rtc brings its own web server and API, which would have to be
+  hidden behind ours and know nothing of our users or camera permissions.
+- H.265 plays through MSE wherever the browser can decode it. Over WebRTC it
+  mostly does not.
+- Timeline playback needs MSE anyway, so the page has one kind of player.
+- Latency of 0.3–0.8 s on a LAN meets the target of under 1 s.
+
+**Cost:** iPhones before iOS 17.1 have no MSE and cannot watch. WebRTC stays
+possible later (`docs/IDEAS.md`).
+
+### 37. A separate media process
+
+Live and playback serving could have lived in the guardian, which already
+serves downloads. It is its own supervised process (`buttercams.exe media`)
+instead: the guardian supervises everything else and must stay small and
+idle, and a viewer-facing component is where load spikes and parsing bugs
+are most likely. The guardian keeps the login, the permission check and the
+index queries, and forwards the bytes.
+
+### 38. The media process connects to sub streams itself
+
+The spec had each worker connect to its cameras' sub streams and re-serve
+them. Instead the media process opens sub streams directly, on demand. The
+recorder process then has nothing to do with sub streams: a sub stream that
+stalls, floods or crashes its reader cannot touch a recording, and the live
+grid needs no change to the worker. Main streams still come only through the
+worker's loopback restream, because a second main-stream connection could
+take the session the hourly rollover needs. From v3, extensions read both
+from the media process (spec 17.2).
+
+### 39. The browser assembles playback; the server keeps no state
+
+The spec said the server "serves a continuous fMP4 stream across segments".
+Instead the browser fetches each file's index and byte ranges and joins them
+in its own buffer. Seeking, speed changes and several viewers then cost the
+server only range reads, and there is no per-viewer session to leak or to
+lose when the media process restarts. The result on screen is the same:
+playback across hour files without a seam.
+
+### 40. Thumbnails are decoded in the browser
+
+"Generated from keyframes on demand and cached" would need a video decoder
+on the server, which rule 2 and the no-CGO rule exclude. The server cuts one
+keyframe out of the file as a tiny complete MP4; the browser decodes it and
+caches the picture.
+
+### 41. Saved views: each user's own, plus shared ones from Admins
+
+The owner's answer. A user's own views are stored with the account in
+`users.json`; shared views are stored in `config.json` (`live.views`), so a
+configuration export carries the shared ones and no personal ones. "Share"
+copies an Admin's view into the shared list; the copies are independent
+afterwards.
+
+### 42. The hourly rollover does not freeze live view
+
+The owner asked to avoid the freeze if possible. The worker's restream serves
+each RTSP session as its own stream and reports when a camera's second
+session starts; the media process connects to both and switches viewers at
+the new session's first keyframe. The switch logic is in the media process,
+so the worker gains one message and a session filter, nothing that looks at
+video. When the notice is missing, live view resumes at the next keyframe as
+it would after any reconnect.
+
+### 43. Browsers, phones and `hvc1`
+
+The owner watches in Chrome and Safari, on Windows, iPhone and Android. Those
+are the acceptance targets; Edge and Firefox are expected to work. iPhones
+need iOS 17.1 (the first with `ManagedMediaSource`); older ones get a message
+(decision 36). Because Safari plays H.265 only with the `hvc1` sample entry,
+H.265 recordings are written that way from v2 on. Phone-size screens show at
+most four live tiles per page.
 
 ## Not verified here
 
