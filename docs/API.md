@@ -333,8 +333,8 @@ playback state. All of them read the nearest available copy of the file
 | Method | Path | Notes |
 | --- | --- | --- |
 | GET | `/segments/{id}/play/index` | The playback index of one file (below) |
-| GET | `/segments/{id}/play/data` | The file's bytes. A `Range` header is required |
-| GET | `/segments/{id}/play/keyframes?from=<ms>&to=<ms>` | Fragments that hold only the first frame (a keyframe) of each chunk in the range, each lasting as long as its chunk; at most 120 per request. Append them after the file's initialization segment. Times are milliseconds from the start of the file |
+| GET | `/segments/{id}/play/data` | The file's bytes. A `Range` header is required (`400 range_required` without). For the file being recorded, a range past its last complete fragment gets `416` |
+| GET | `/segments/{id}/play/keyframes?from=<ms>&to=<ms>` | Fragments that hold only the first frame (a keyframe) of each chunk in the range, each lasting as long as its chunk; at most 120 per request. They carry video only: play them in a source buffer of their own made with `videoMime`, and add `init=1` to get a video-only initialization segment in front. Times are milliseconds from the start of the file |
 | GET | `/segments/{id}/play/thumb?t=<ms>` | A complete small MP4 with the one keyframe at or before `t` |
 
 Playback index:
@@ -342,6 +342,7 @@ Playback index:
 ```json
 {
   "mime": "video/mp4; codecs=\"avc1.640028, mp4a.40.2\"",
+  "videoMime": "video/mp4; codecs=\"avc1.640028\"",   // the video track alone, for keyframe mode
   "init": [0, 1532],               // byte offset and length of the initialization segment
   "start": "2026-11-14T09:00:00.212-06:00",
   "durationMs": 3599968,
@@ -351,6 +352,8 @@ Playback index:
 }
 ```
 
+Times are milliseconds with three decimals, so `round(ms * 90)` is the exact
+90 kHz tick. `start` is `null` for a file that does not carry its start time.
 A chunk starts at a keyframe and can be fetched and appended on its own. Media
 times inside a file start at zero; the player places each file on its own
 timeline (`timestampOffset`).

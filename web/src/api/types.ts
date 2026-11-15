@@ -579,14 +579,19 @@ export interface TimelineResponse {
 /** One keyframe-aligned chunk of a recording: [startMs, durationMs, byteOffset, byteSize]. */
 export type PlayChunk = [number, number, number, number];
 
-/** GET /segments/{id}/play/index. Times are milliseconds from the start of the file. */
+/**
+ * GET /segments/{id}/play/index. Times are milliseconds from the start of
+ * the file, with three decimals: `Math.round(ms * 90)` is the exact 90 kHz tick.
+ */
 export interface PlayIndex {
   /** Full MIME type for MediaSource.addSourceBuffer. */
   mime: string;
   /** Byte range [offset, length] of the initialization segment. */
   init: [number, number];
-  /** Wall-clock time of the first frame. */
-  start: Timestamp;
+  /** MIME type of the video track alone, for keyframe mode (its fragments carry no audio). */
+  videoMime: string;
+  /** Wall-clock time of the first frame; `null` when the file does not say. */
+  start: Timestamp | null;
   /** Length of the video in the file so far. */
   durationMs: number;
   chunks: PlayChunk[];
