@@ -46,3 +46,7 @@ func (j *Job) Close() { j.Terminate() }
 // PrepareChild ties the child's lifetime to the guardian where the platform
 // supports it (see job_linux.go).
 func PrepareChild(cmd *exec.Cmd) { prepareChild(cmd) }
+
+// BelowNormalPriority does nothing outside Windows: the development builds
+// for other systems run every process at the same priority.
+func BelowNormalPriority(*exec.Cmd) {}

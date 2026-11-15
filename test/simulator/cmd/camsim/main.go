@@ -6,8 +6,12 @@
 //	camsim --single-session --keyint 4         cameras that refuse a second session
 //	camsim --stall-every 5m --stall-for 20s    streams that stall at random
 //	camsim --user admin --password secret      cameras that require a login
+//	camsim --sub                               add a low-resolution sub stream to each
+//	camsim --sub --sub-video h265              … an H.265 one
+//	camsim --sub --sub-refuse                  … one that refuses connections
 //
-// Streams are served at rtsp://<listen>/cam1 … /camN.
+// Streams are served at rtsp://<listen>/cam1 … /camN, sub streams at
+// rtsp://<listen>/cam1/sub … /camN/sub.
 package main
 
 import (
@@ -33,6 +37,9 @@ func main() {
 	stallEvery := flag.Duration("stall-every", 0, "average time between random stalls (0 = never)")
 	stallFor := flag.Duration("stall-for", 15*time.Second, "length of a random stall")
 	pad := flag.Int("pad", 0, "filler bytes added to every frame (33000 is about 4 Mbit/s)")
+	sub := flag.Bool("sub", false, "also serve a low-resolution sub stream at /camN/sub")
+	subVideo := flag.String("sub-video", "h264", "codec of the sub stream: h264 or h265")
+	subRefuse := flag.Bool("sub-refuse", false, "the sub stream refuses every connection")
 	flag.Parse()
 
 	var streams []simulator.Stream
@@ -42,6 +49,12 @@ func main() {
 			KeyframeInterval: time.Duration(*keyint) * time.Second, SingleSession: *single,
 			Username: *user, Password: *password, StallEvery: *stallEvery, StallFor: *stallFor, PadBytes: *pad,
 		})
+		if *sub {
+			streams = append(streams, simulator.Stream{
+				Path: simulator.SubPath(fmt.Sprintf("/cam%d", i)), Video: *subVideo, Small: *subVideo == "h264",
+				Refuse: *subRefuse, Username: *user, Password: *password,
+			})
+		}
 	}
 	srv, err := simulator.Start(*listen, streams)
 	if err != nil {

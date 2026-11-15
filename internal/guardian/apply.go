@@ -5,15 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
-	"sort"
 	"time"
 
 	"github.com/jxburros/buttercams/internal/api"
 	"github.com/jxburros/buttercams/internal/config"
 	"github.com/jxburros/buttercams/internal/index"
 	"github.com/jxburros/buttercams/internal/ipc"
-	"github.com/jxburros/buttercams/internal/naming"
 	"github.com/jxburros/buttercams/internal/winsvc"
 )
 
@@ -60,7 +57,8 @@ func (g *Guardian) applyChanges(old, next *config.Config, ch config.Changes) {
 	}
 	g.log.Info("configuration changed",
 		"camerasAdded", ch.CamerasAdded, "camerasRemoved", ch.CamerasRemoved, "camerasChanged", ch.CamerasChanged,
-		"destinationsChanged", ch.DestinationsChanged, "stagingPathChanged", ch.StagingPathChanged, "serverChanged", ch.ServerChanged)
+		"destinationsChanged", ch.DestinationsChanged, "stagingPathChanged", ch.StagingPathChanged, "serverChanged", ch.ServerChanged,
+		"liveChanged", ch.LiveChanged)
 
 	for _, id := range ch.CamerasRemoved {
 		g.removeCamera(id)
@@ -148,6 +146,17 @@ func (g *Guardian) applyChanges(old, next *config.Config, ch config.Changes) {
 	if ch.ServerChanged && g.server != nil {
 		g.server.Restart(next.Server)
 	}
+
+	// Live view (spec 16.8). None of this touches a recording.
+	if ch.LiveChanged {
+		for _, w := range g.allWorkers() {
+			g.sendRestream(w.proc)
+		}
+		g.syncMedia()
+	}
+	if ch.LiveChanged || ch.StagingPathChanged || len(ch.CamerasAdded)+len(ch.CamerasRemoved)+len(ch.CamerasChanged) > 0 {
+		g.sendAssignMedia()
+	}
 }
 
 // PurgeCamera deletes every indexed recording of a camera that was deleted
@@ -208,39 +217,10 @@ func (g *Guardian) OpenSegment(ctx context.Context, id int64) (*os.File, index.S
 	if err != nil {
 		return nil, seg, err
 	}
-	rel, ok := naming.RelPath(seg.FileName)
-	if !ok {
-		return nil, seg, errors.New("not a recording name")
+	cands, err := g.segmentCandidates(seg)
+	if err != nil {
+		return nil, seg, err
 	}
-	cfg := g.config()
-	type candidate struct {
-		path string
-		rank int
-		dest *config.Destination
-	}
-	var cands []candidate
-	for _, c := range seg.Copies {
-		if c.State != index.CopyVerified {
-			continue
-		}
-		if c.DestinationID == ipc.StagingID {
-			for _, root := range g.stagingRoots() {
-				cands = append(cands, candidate{filepath.Join(root, rel), 0, nil})
-			}
-			continue
-		}
-		d, ok := cfg.Destination(c.DestinationID)
-		if !ok {
-			continue
-		}
-		rank := 1
-		if d.Type == config.DestUNC {
-			rank = 2
-		}
-		dc := d
-		cands = append(cands, candidate{filepath.Join(d.Path, rel), rank, &dc})
-	}
-	sort.SliceStable(cands, func(i, j int) bool { return cands[i].rank < cands[j].rank })
 
 	for _, c := range cands {
 		// Opening a file on a share that is down can hang for a long time;
@@ -256,7 +236,7 @@ func (g *Guardian) OpenSegment(ctx context.Context, id int64) (*os.File, index.S
 					winsvc.ConnectShare(c.dest.Path, c.dest.Username, pw)
 				}
 			}
-			f, err := os.Open(c.path)
+			f, err := winsvc.OpenShared(c.path)
 			ch <- result{f, err}
 		}(c)
 		select {

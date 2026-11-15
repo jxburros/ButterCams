@@ -121,7 +121,7 @@ export interface Camera {
   transport: Transport;
   recordAudio: boolean;
   destinationIds: string[];
-  /** Reserved for later versions. */
+  /** Path of the low-resolution sub stream used by the live grid; `null` = none. */
   subStreamPath: string | null;
   /** Reserved for later versions; v1 is always "continuous". */
   recordingMode: string;
@@ -158,6 +158,8 @@ export interface CameraInput {
   transport: Transport;
   recordAudio: boolean;
   destinationIds: string[];
+  /** Omit to keep the saved value; "" removes the sub stream. */
+  subStreamPath?: string;
 }
 
 /** Response of POST /cameras/test. */
@@ -173,6 +175,17 @@ export interface CameraTestResult {
   audioNote: string;
   /** `null` when it could not be determined. */
   secondSessionAllowed: boolean | null;
+  warnings: string[];
+  /** Result for the sub stream; `null` when the camera has none. */
+  sub: SubStreamTestResult | null;
+}
+
+export interface SubStreamTestResult {
+  ok: boolean;
+  error: string;
+  videoCodec: string;
+  width: number;
+  height: number;
   warnings: string[];
 }
 
@@ -409,6 +422,34 @@ export interface SystemInfo {
   certificate: CertificateInfo | null;
   counts: SystemCounts;
   rebuild: RebuildStatus;
+  live: LiveSettings;
+  media: MediaStatus;
+}
+
+/** Live view and playback switches (spec 16.8). */
+export interface LiveSettings {
+  /** Off stops the media process and hides live view and playback. */
+  enabled: boolean;
+  /** Off keeps the recorders' main-stream restream off; live uses sub streams only. */
+  mainStream: boolean;
+}
+
+export interface MediaSource {
+  cameraId: string;
+  stream: StreamKind;
+  viewers: number;
+  state: 'playing' | 'connecting' | 'waiting';
+}
+
+/** State of the media process (live view and playback server). */
+export interface MediaStatus {
+  enabled: boolean;
+  state: 'running' | 'starting' | 'off';
+  viewers: number;
+  /** Empty for Viewers with a camera limit. */
+  sources: MediaSource[];
+  overflows: number;
+  memBytes: number;
 }
 
 /** Body of PUT /system: any of the three sections. */
@@ -416,6 +457,7 @@ export interface SystemUpdate {
   server?: ServerSettings;
   staging?: StagingSettings;
   logging?: LoggingSettings;
+  live?: Partial<LiveSettings>;
 }
 
 /** Response of POST /system/rebuild-index (202). */
@@ -440,6 +482,8 @@ export interface UserAccount {
   role: Role;
   createdAt: Timestamp;
   locked: boolean;
+  /** `null` = every camera; otherwise the cameras this Viewer may see. */
+  cameras: string[] | null;
 }
 
 /** GET /users. */
@@ -452,10 +496,103 @@ export interface UserCreate {
   username: string;
   password: string;
   role: Role;
+  /** Camera ids a Viewer is limited to; `null` or omitted = every camera. */
+  cameras?: string[] | null;
 }
 
 /** Body of PUT /users/{username}. */
 export interface UserUpdate {
   password?: string;
   role?: Role;
+  /** Omit to keep; `null` removes the limit; a list sets it. */
+  cameras?: string[] | null;
+}
+
+// ---------------------------------------------------------------- Live view
+
+export type StreamKind = 'main' | 'sub';
+
+export type TileLayout = 1 | 4 | 9 | 16;
+
+/** A saved arrangement of cameras on the Live page. */
+export interface LiveView {
+  id: string;
+  name: string;
+  layout: TileLayout;
+  /** Camera ids in tile order; only cameras the user may see. */
+  cameraIds: string[];
+}
+
+export interface LiveViewsResponse {
+  /** Views every user sees; only Admins edit them. */
+  shared: LiveView[];
+  /** The signed-in user's own views. */
+  mine: LiveView[];
+}
+
+/** First (text) message of the live WebSocket, and again when the stream's parameters change. */
+export interface LiveInitMessage {
+  type: 'init';
+  /** Full MIME type for MediaSource.addSourceBuffer, e.g. `video/mp4; codecs="avc1.64001f"`. */
+  mime: string;
+  width: number;
+  height: number;
+}
+
+/** Sent while there is no video (camera offline, connecting …). */
+export interface LiveStateMessage {
+  type: 'state';
+  state: 'waiting';
+  message: string;
+}
+
+export type LiveMessage = LiveInitMessage | LiveStateMessage;
+
+// ---------------------------------------------------------------- Timeline
+
+export interface TimelineSegment {
+  id: number;
+  start: Timestamp;
+  /** `null` while the file is being recorded. */
+  end: Timestamp | null;
+  /** `true` when recording was interrupted before this file. */
+  gapBefore: boolean;
+  videoCodec: string;
+  audioCodec: string;
+  /** `true` for the file being recorded right now. */
+  open: boolean;
+  fileName: string;
+  bytes: number | null;
+}
+
+export interface TimelineResponse {
+  camera: string;
+  from: Timestamp;
+  to: Timestamp;
+  /** The server's clock when it answered. */
+  now: Timestamp;
+  segments: TimelineSegment[];
+  /** Recorder events of this camera in the range (stalls, reconnects, clock changes), oldest first. */
+  events: EventRow[];
+}
+
+/** One keyframe-aligned chunk of a recording: [startMs, durationMs, byteOffset, byteSize]. */
+export type PlayChunk = [number, number, number, number];
+
+/** GET /segments/{id}/play/index. Times are milliseconds from the start of the file. */
+export interface PlayIndex {
+  /** Full MIME type for MediaSource.addSourceBuffer. */
+  mime: string;
+  /** Byte range [offset, length] of the initialization segment. */
+  init: [number, number];
+  /** Wall-clock time of the first frame. */
+  start: Timestamp;
+  /** Length of the video in the file so far. */
+  durationMs: number;
+  chunks: PlayChunk[];
+  /** `true` while the file is still being recorded: ask again for more chunks. */
+  open: boolean;
+  width: number;
+  height: number;
+  hasAudio: boolean;
 }

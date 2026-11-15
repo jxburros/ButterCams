@@ -11,6 +11,7 @@ import (
 	"github.com/jxburros/buttercams/internal/config"
 	"github.com/jxburros/buttercams/internal/ipc"
 	"github.com/jxburros/buttercams/internal/mp4meta"
+	"github.com/jxburros/buttercams/internal/stream"
 )
 
 func TestBackoffSequence(t *testing.T) {
@@ -51,13 +52,13 @@ func TestBackoffJitterWithinTwentyPercent(t *testing.T) {
 
 // The recorder must never block on a reader (spec 15).
 func TestFanoutDropsWhenReaderIsFull(t *testing.T) {
-	f := &Fanout{}
+	f := &stream.Fanout{}
 	slow := f.Register("slow", 2)
 	fast := f.Register("fast", 100)
 	done := make(chan struct{})
 	go func() {
 		for i := 0; i < 50; i++ {
-			f.Publish(&Packet{RTP: &rtp.Packet{}})
+			f.Publish(&stream.Packet{RTP: &rtp.Packet{}})
 		}
 		close(done)
 	}()
@@ -73,7 +74,7 @@ func TestFanoutDropsWhenReaderIsFull(t *testing.T) {
 		t.Fatalf("fast reader: %d queued, %d dropped", len(fast.C), fast.Dropped())
 	}
 	f.Unregister(slow)
-	f.Publish(&Packet{RTP: &rtp.Packet{}})
+	f.Publish(&stream.Packet{RTP: &rtp.Packet{}})
 	if len(slow.C) != 2 || len(fast.C) != 51 {
 		t.Fatal("unregistered reader still receives packets")
 	}
@@ -130,7 +131,7 @@ func TestSegmentWriterFragmentsAndNames(t *testing.T) {
 	dir := t.TempDir()
 	sps := []byte{0x67, 0x42, 0xc0, 0x0d, 0xd9, 0x01, 0x41, 0xfb, 0x01, 0x10, 0x00, 0x00, 0x03, 0x00, 0x10, 0x00, 0x00, 0x03, 0x03, 0xc0, 0xf1, 0x42, 0x99, 0x60}
 	pps := []byte{0x68, 0xcb, 0x83, 0xcb, 0x20}
-	vp := videoParams{codec: "h264", sps: sps, pps: pps}
+	vp := stream.VideoParams{Codec: "h264", SPS: sps, PPS: pps}
 	start := time.Date(2026, 11, 14, 9, 30, 0, 123_000_000, time.Local)
 
 	open := func(taken func(string) bool) *segment {
@@ -151,7 +152,7 @@ func TestSegmentWriterFragmentsAndNames(t *testing.T) {
 	n := 0
 	for i := 0; i < 150; i++ {
 		key := i == 0 || i == 15
-		u := sample{video: true, pts: 1000 + int64(i)*frame, dts: 1000 + int64(i)*frame, key: key, nalus: [][]byte{{0x65}}}
+		u := stream.Sample{Video: true, PTS: 1000 + int64(i)*frame, DTS: 1000 + int64(i)*frame, Key: key, NALUs: [][]byte{{0x65}}}
 		if err := seg.writeVideo(u); err != nil {
 			t.Fatal(err)
 		}
@@ -211,13 +212,13 @@ func TestSegmentWriterSurvivesTimestampJumps(t *testing.T) {
 	dir := t.TempDir()
 	sps := []byte{0x67, 0x42, 0xc0, 0x0d, 0xd9, 0x01, 0x41, 0xfb, 0x01, 0x10, 0x00, 0x00, 0x03, 0x00, 0x10, 0x00, 0x00, 0x03, 0x03, 0xc0, 0xf1, 0x42, 0x99, 0x60}
 	pps := []byte{0x68, 0xcb, 0x83, 0xcb, 0x20}
-	seg, err := openSegment(dir, "cam", time.Now(), videoParams{codec: "h264", sps: sps, pps: pps}, nil, true, nil)
+	seg, err := openSegment(dir, "cam", time.Now(), stream.VideoParams{Codec: "h264", SPS: sps, PPS: pps}, nil, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dts := []int64{0, 6000, 12000, 5_000_000_000, 5_000_006_000, 100, 6100}
 	for i, d := range dts {
-		if err := seg.writeVideo(sample{video: true, pts: d, dts: d, key: i == 0, nalus: [][]byte{{0x65}}}); err != nil {
+		if err := seg.writeVideo(stream.Sample{Video: true, PTS: d, DTS: d, Key: i == 0, NALUs: [][]byte{{0x65}}}); err != nil {
 			t.Fatal(err)
 		}
 	}

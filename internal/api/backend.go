@@ -93,6 +93,15 @@ type Backend interface {
 	Index() *index.DB
 	// OpenSegment opens the nearest available copy of a segment for reading.
 	OpenSegment(ctx context.Context, id int64) (*os.File, index.Segment, error)
+	// SegmentPaths returns a segment and the paths of its files, nearest copy
+	// first, for the media process to read. For the segment still being
+	// recorded it is the file in staging.
+	SegmentPaths(ctx context.Context, id int64) (index.Segment, []string, error)
+	// Media returns the loopback address of the media process and the token
+	// its requests need; ok is false while it is not running.
+	Media() (addr, token string, ok bool)
+	// MediaStatus reports on the media process.
+	MediaStatus() MediaStatus
 	// PurgeCamera deletes every indexed recording of a deleted camera.
 	PurgeCamera(cameraID string)
 

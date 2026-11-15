@@ -42,6 +42,12 @@ type Stream struct {
 	// Video is "h264" (default), "h265" or "mjpeg" (a codec ButterCams does
 	// not record).
 	Video string
+	// Small selects the 160x120 H.264 picture: what a camera's sub stream
+	// looks like next to its main stream. H.264 only.
+	Small bool
+	// Refuse makes the stream answer every connection with RTSP 500, like a
+	// camera whose sub stream is switched off.
+	Refuse bool
 	// KeyframeInterval is 1 s (default) or 4 s. H.264 only.
 	KeyframeInterval time.Duration
 	// Audio is "none" (default), "aac", "opus", "pcmu", "pcma", "g726" or
@@ -198,6 +204,10 @@ func (s *Server) FailNewSessions(path string, on bool) {
 	}
 }
 
+// SubPath is the path of the sub stream that belongs to a main stream path,
+// as AddSub and camsim --sub serve it.
+func SubPath(path string) string { return strings.TrimSuffix(path, "/") + "/sub" }
+
 // Sessions returns the number of sessions currently set up on a stream.
 func (s *Server) Sessions(path string) int {
 	st := s.get(path)
@@ -278,6 +288,9 @@ func loadVideo(cfg Stream) (*videoSource, error) {
 		name := "samples/h264_1s.h264"
 		if cfg.KeyframeInterval >= 3*time.Second {
 			name = "samples/h264_4s.h264"
+		}
+		if cfg.Small {
+			name = "samples/h264_small.h264"
 		}
 		data, err := samples.ReadFile(name)
 		if err != nil {
@@ -524,7 +537,7 @@ func (s *Server) Add(cfg Stream) error {
 		audioMedia = &description.Media{Type: description.MediaTypeAudio, Formats: []format.Format{audio.format}}
 		desc.Medias = append(desc.Medias, audioMedia)
 	}
-	st := &stream{cfg: cfg, stop: make(chan struct{}), sessions: map[*gortsplib.ServerSession]struct{}{}}
+	st := &stream{cfg: cfg, stop: make(chan struct{}), sessions: map[*gortsplib.ServerSession]struct{}{}, failed: cfg.Refuse}
 	st.st = &gortsplib.ServerStream{Server: s.srv, Desc: desc}
 	if err := st.st.Initialize(); err != nil {
 		return err
