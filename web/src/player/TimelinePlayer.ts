@@ -20,7 +20,20 @@ import {
   wantKeyframes,
 } from './timelineLogic';
 import type { QualitySample } from './timelineLogic';
-import { anchor, chunkAt, chunkRun, gapMessage, mediaToWall, nextSpan, placedAt, placeNext, seekTarget, wallToMedia } from './timelineMap';
+import {
+  anchor,
+  chunkAt,
+  chunkRun,
+  firstFrameMs,
+  gapMessage,
+  mediaToWall,
+  nextSpan,
+  placedAt,
+  placeNext,
+  seamKeep,
+  seekTarget,
+  wallToMedia,
+} from './timelineMap';
 import type { Placed, PlacedGap, Span } from './timelineMap';
 
 export type PlayerStatus =
@@ -73,6 +86,23 @@ interface Loaded {
   next: number;
   /** When the open file's index was last fetched. */
   refreshedAt: number;
+  /** Chunks to play; fewer than all when the next file repeats the end (rollover). Unset until decided. */
+  limit?: number;
+  /** Duration of one video frame, ms; 0 until a chunk has been read. */
+  frameMs: number;
+  /** Keyframe mode: the next request must bring the video-only header. */
+  needInit: boolean;
+}
+
+/** The tail of a file is decided when this few chunks are left to append. */
+const TAIL_CHUNKS = 3;
+
+class HttpError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
 }
 
 type VideoWithCallbacks = HTMLVideoElement & {
@@ -338,7 +368,9 @@ export class TimelinePlayer implements SyncPlayer {
     const span = target.span;
     const index = await this.fetchIndex(span);
     if (stale()) return;
-    if (!isTypeSupported(index.mime)) {
+    // Keyframe-only fragments carry no audio: they need a video-only source.
+    const mime = this.mimeFor(index);
+    if (!isTypeSupported(mime)) {
       this.video.pause();
       this.teardown();
       this.positionMs = Math.max(wallMs, span.startMs);
@@ -355,7 +387,7 @@ export class TimelinePlayer implements SyncPlayer {
 
     // One MediaSource per MIME string; a seek inside the same kind of file
     // only empties the buffer.
-    if (!this.sb || !this.attached || this.mime !== index.mime || this.attached.mediaSource.readyState !== 'open') {
+    if (!this.sb || !this.attached || this.mime !== mime || this.attached.mediaSource.readyState !== 'open') {
       this.teardown();
       const attached = attachMediaSource(this.video);
       if (!attached) {
@@ -365,9 +397,9 @@ export class TimelinePlayer implements SyncPlayer {
       this.attached = attached;
       await attached.opened;
       if (stale()) return;
-      this.sb = attached.mediaSource.addSourceBuffer(index.mime);
+      this.sb = attached.mediaSource.addSourceBuffer(mime);
       this.sb.mode = 'segments';
-      this.mime = index.mime;
+      this.mime = mime;
     } else {
       const sb = this.sb;
       await waitUpdate(sb);
@@ -389,7 +421,7 @@ export class TimelinePlayer implements SyncPlayer {
     // The newest chunks of the file being recorded may not be listed yet: stay inside.
     const startS = Math.min(offsetMs, Math.max(0, index.durationMs - 200)) / 1000;
     if (index.chunks.length === 0) first = 0;
-    this.chain = [{ span, index, placed, next: first, refreshedAt: Date.now() }];
+    this.chain = [{ span, index, placed, next: first, refreshedAt: Date.now(), frameMs: 0, needInit: true }];
     this.gaps = [];
     this.restartAt = null;
     this.noMore = false;
@@ -421,6 +453,10 @@ export class TimelinePlayer implements SyncPlayer {
     return index;
   }
 
+  private mimeFor(index: PlayIndex): string {
+    return this.keyframes && index.videoMime ? index.videoMime : index.mime;
+  }
+
   private async fetchBytes(url: string, range: [number, number] | null): Promise<ArrayBuffer> {
     const headers: Record<string, string> = {};
     if (range) headers.Range = `bytes=${range[0]}-${range[0] + range[1] - 1}`;
@@ -439,7 +475,7 @@ export class TimelinePlayer implements SyncPlayer {
       } catch {
         // not JSON
       }
-      throw new Error(message);
+      throw new HttpError(res.status, message);
     }
     return res.arrayBuffer();
   }
@@ -479,9 +515,15 @@ export class TimelinePlayer implements SyncPlayer {
     const sb = this.sb;
     if (!sb) return;
     const generation = this.generation;
-    const [offset, length] = item.index.init;
-    const init = await this.fetchBytes(api.playDataUrl(item.span.id), [offset, length]);
-    if (generation !== this.generation || this.sb !== sb) return;
+    // In keyframe mode the header comes with the first keyframes (init=1): it
+    // is a video-only one, not the file's.
+    let init: ArrayBuffer | null = null;
+    if (!this.keyframes) {
+      const [offset, length] = item.index.init;
+      init = await this.fetchBytes(api.playDataUrl(item.span.id), [offset, length]);
+      if (generation !== this.generation || this.sb !== sb) return;
+    }
+    item.needInit = true;
     await waitUpdate(sb);
     try {
       sb.abort(); // resets the parser between files
@@ -490,7 +532,30 @@ export class TimelinePlayer implements SyncPlayer {
     }
     sb.timestampOffset = item.placed.mediaStart;
     this.setAppendWindow(item);
-    await this.append(init, generation);
+    if (init) await this.append(init, generation);
+  }
+
+  /**
+   * Before the last chunks of a closed file are appended: if the next file
+   * repeats them (the hourly rollover), leave them out.
+   */
+  private async decideTail(head: Loaded, generation: number): Promise<void> {
+    const total = head.index.chunks.length;
+    const following = nextSpan(this.spans, head.span.id);
+    if (!following) return; // not known yet; decided when it appears, if chunks are left
+    head.limit = total;
+    if (following.gapBefore) return;
+    const next = await this.fetchIndex(following);
+    if (generation !== this.generation) return;
+    const parsed = next.start ? Date.parse(next.start) : NaN;
+    const nextStart = Number.isNaN(parsed) ? following.startMs : parsed;
+    const frameMs = head.frameMs > 0 ? head.frameMs : this.frameDuration > 0 ? this.frameDuration * 1000 : 1000 / (this.opts.fps && this.opts.fps > 0 ? this.opts.fps : 15);
+    const { keep, keptMs } = seamKeep(head.index.chunks, head.placed.wallStartMs, head.index.durationMs, nextStart, frameMs);
+    if (keep < total && keep >= head.next) {
+      head.limit = keep;
+      head.placed.duration = keptMs / 1000;
+      this.setAppendWindow(head);
+    }
   }
 
   /** Nothing of a file may land outside its place: the rollover overlap is cut here. */
@@ -555,22 +620,51 @@ export class TimelinePlayer implements SyncPlayer {
       }
     }
 
-    if (head.next < head.index.chunks.length) {
+    if (!head.index.open && head.limit === undefined && head.next >= head.index.chunks.length - TAIL_CHUNKS) {
+      await this.decideTail(head, generation);
+      if (generation !== this.generation) return false;
+    }
+    const limit = head.index.open ? head.index.chunks.length : (head.limit ?? head.index.chunks.length);
+
+    if (head.next < limit) {
       if (!needsMore(t, Math.max(end, t), this.rate)) return false;
-      if (this.keyframes) {
-        const last = Math.min(head.next + KEYFRAME_RUN, head.index.chunks.length) - 1;
-        const a = head.index.chunks[head.next];
-        const b = head.index.chunks[last];
-        if (!a || !b) return false;
-        const data = await this.fetchBytes(api.playKeyframesUrl(head.span.id, a[0], b[0] + b[1]), null);
-        if (!(await this.append(data, generation))) return false;
-        head.next = last + 1;
-      } else {
-        const run = chunkRun(head.index.chunks, head.next, RUN_BYTES, RUN_MS);
-        if (!run) return false;
-        const data = await this.fetchBytes(api.playDataUrl(head.span.id), [run.offset, run.size]);
-        if (!(await this.append(data, generation))) return false;
-        head.next += run.count;
+      try {
+        if (this.keyframes) {
+          const last = Math.min(head.next + KEYFRAME_RUN, limit) - 1;
+          const a = head.index.chunks[head.next];
+          const b = head.index.chunks[last];
+          if (!a || !b) return false;
+          // The server returns every chunk that overlaps [from, to): stay
+          // strictly inside the wanted ones.
+          const from = (a[0] + Math.min(1, a[1] / 2)).toFixed(3);
+          const to = (b[0] + b[1] - Math.min(1, b[1] / 2)).toFixed(3);
+          const url = `${api.playDataUrl(head.span.id).replace(/data$/, 'keyframes')}?from=${from}&to=${to}${head.needInit ? '&init=1' : ''}`;
+          const data = await this.fetchBytes(url, null);
+          if (!(await this.append(data, generation))) return false;
+          head.needInit = false;
+          head.next = last + 1;
+        } else {
+          const run = chunkRun(head.index.chunks.slice(0, limit), head.next, RUN_BYTES, RUN_MS);
+          if (!run) return false;
+          const data = await this.fetchBytes(api.playDataUrl(head.span.id), [run.offset, run.size]);
+          if (head.frameMs === 0) head.frameMs = firstFrameMs(data);
+          if (!(await this.append(data, generation))) return false;
+          head.next += run.count;
+        }
+      } catch (err) {
+        // The file being recorded: the index can be a moment ahead of what
+        // can be read, or the file was closed and renamed meanwhile. Ask again.
+        if (err instanceof HttpError && (err.status === 416 || err.status === 404) && head.index.open) {
+          head.refreshedAt = 0;
+          const index = await api.playIndex(head.span.id);
+          if (generation !== this.generation) return false;
+          this.indexCache.set(head.span.id, index);
+          head.index = index;
+          head.placed.duration = index.durationMs / 1000;
+          head.refreshedAt = Date.now();
+          return false;
+        }
+        throw err;
       }
       return true;
     }
@@ -609,14 +703,14 @@ export class TimelinePlayer implements SyncPlayer {
     }
     const index = await this.fetchIndex(following);
     if (generation !== this.generation) return false;
-    if (index.mime !== this.mime || !isTypeSupported(index.mime)) {
+    if (this.mimeFor(index) !== this.mime) {
       // Another codec, resolution or set of tracks: a new media source starts
       // at the boundary (a short blink is acceptable there).
       this.restartAt = following;
       return false;
     }
-    const { placed, gap } = placeNext(head.placed, head.span, following, index);
-    const item: Loaded = { span: following, index, placed, next: 0, refreshedAt: Date.now() };
+    const { placed, gap } = placeNext(head.placed, following, index);
+    const item: Loaded = { span: following, index, placed, next: 0, refreshedAt: Date.now(), frameMs: 0, needInit: true };
     this.chain.push(item);
     if (gap) this.gaps.push(gap);
     // Forget files that are entirely behind the buffer.

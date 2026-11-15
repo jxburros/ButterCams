@@ -5,6 +5,8 @@ import {
   ANCHOR_S,
   chunkAt,
   chunkRun,
+  firstFrameMs,
+  seamKeep,
   continues,
   GAP_JUMP_S,
   gapMessage,
@@ -40,12 +42,12 @@ describe('timeline map', () => {
     expect(continues(a, b)).toBe(true);
     const pa = anchor(a, idx(a.startMs, 3_600_033));
     expect(pa.mediaStart).toBe(ANCHOR_S);
-    const { placed: pb, gap } = placeNext(pa, a, b, idx(b.startMs, 3_599_970));
+    const { placed: pb, gap } = placeNext(pa, b, idx(b.startMs, 3_599_970));
     expect(gap).toBeNull();
     // Not the wall clock difference (3600.040 s) but the media duration of the first file.
     expect(pb.mediaStart).toBeCloseTo(ANCHOR_S + 3600.033, 9);
     expect(pb.afterGap).toBe(false);
-    const { placed: pc, gap: gap2 } = placeNext(pb, b, c, idx(c.startMs, 1_800_000));
+    const { placed: pc, gap: gap2 } = placeNext(pb, c, idx(c.startMs, 1_800_000));
     expect(gap2).toBeNull();
     expect(pc.mediaStart).toBeCloseTo(pb.mediaStart + 3599.97, 9);
   });
@@ -53,7 +55,7 @@ describe('timeline map', () => {
   it('places a file after a real gap behind a jump and reports the gap', () => {
     expect(continues(c, d)).toBe(false);
     const pc: Placed = { id: 3, wallStartMs: c.startMs, mediaStart: 100, duration: 1800, afterGap: false };
-    const { placed, gap } = placeNext(pc, c, d, idx(d.startMs, 3_600_000));
+    const { placed, gap } = placeNext(pc, d, idx(d.startMs, 3_600_000));
     expect(placed.mediaStart).toBe(1900 + GAP_JUMP_S);
     expect(placed.afterGap).toBe(true);
     expect(gap).toEqual({ mediaFrom: 1900, mediaTo: 1900 + GAP_JUMP_S, wallFromMs: c.startMs + 1_800_000, wallToMs: d.startMs });
@@ -153,5 +155,59 @@ describe('chunks', () => {
       [1000, 1000, 500, 100],
     ];
     expect(chunkRun(holed, 0, 1 << 20, 60_000)).toEqual({ count: 1, offset: 0, size: 100 });
+  });
+});
+
+describe('rollover seam', () => {
+  // A file of 10 s in 1 s chunks, 15 frames a second.
+  const chunks: PlayChunk[] = Array.from({ length: 10 }, (_, i) => [i * 1000, 1000, 1000 + i * 500, 500] as PlayChunk);
+  const frame = 1000 / 15;
+
+  it('keeps everything when the files do not overlap', () => {
+    expect(seamKeep(chunks, 0, 10_000, 10_000, frame)).toEqual({ keep: 10, keptMs: 10_000 });
+    expect(seamKeep(chunks, 0, 10_000, 10_020, frame)).toEqual({ keep: 10, keptMs: 10_000 }); // a small hole
+    expect(seamKeep(chunks, 0, 10_000, 9_980, frame)).toEqual({ keep: 10, keptMs: 10_000 }); // under half a frame
+  });
+
+  it('leaves out the chunk the new file repeats', () => {
+    // The new file starts where the old file's last chunk starts.
+    expect(seamKeep(chunks, 0, 10_000, 9_000, frame)).toEqual({ keep: 9, keptMs: 9_000 });
+    // ... or within a frame after it.
+    expect(seamKeep(chunks, 0, 10_000, 9_050, frame)).toEqual({ keep: 9, keptMs: 9_000 });
+    // Two chunks repeated.
+    expect(seamKeep(chunks, 0, 10_000, 8_000.4, frame)).toEqual({ keep: 8, keptMs: 8_000 });
+    // An overlap inside the last chunk only: nothing starts after the cut.
+    expect(seamKeep(chunks, 0, 10_000, 9_500, frame)).toEqual({ keep: 10, keptMs: 10_000 });
+  });
+
+  it('never drops a whole file and ignores absurd overlaps', () => {
+    expect(seamKeep(chunks.slice(0, 1), 0, 1000, 0, frame).keep).toBe(1);
+    expect(seamKeep(chunks, 0, 10_000, 2_000, frame)).toEqual({ keep: 10, keptMs: 10_000 });
+  });
+
+  it('joins the new file at the end of what was kept', () => {
+    const { keptMs } = seamKeep(chunks, T0, 10_000, T0 + 9_000, frame);
+    const prev: Placed = { id: 1, wallStartMs: T0, mediaStart: 10, duration: keptMs / 1000, afterGap: true };
+    const { placed, gap } = placeNext(prev, span(2, T0 + 9_000, T0 + 19_000), { start: new Date(T0 + 9_000).toISOString(), durationMs: 10_000 });
+    expect(gap).toBeNull();
+    expect(placed.mediaStart).toBe(19);
+    // A file that does not say when it starts uses the span's start.
+    expect(placeNext(prev, span(2, T0 + 9_000, T0 + 19_000), { start: null, durationMs: 10_000 }).placed.wallStartMs).toBe(T0 + 9_000);
+  });
+
+  it('reads the duration of the first video frame of a fragment', () => {
+    const box = (type: string, ...parts: number[][]) => {
+      const body = parts.flat();
+      const size = body.length + 8;
+      return [size >>> 24, (size >>> 16) & 255, (size >>> 8) & 255, size & 255, ...[...type].map((c) => c.charCodeAt(0)), ...body];
+    };
+    const u32 = (n: number) => [n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+    const traf = (track: number, dur: number) =>
+      box('traf', box('tfhd', u32(0x020000), u32(track)), box('tfdt', u32(1 << 24), u32(0), u32(0)), box('trun', u32((1 << 24) | 0x301), u32(2), u32(100), u32(dur), u32(10), u32(dur), u32(10)));
+    const moof = box('moof', box('mfhd', u32(0), u32(1)), traf(2, 1024), traf(1, 6000));
+    const bytes = new Uint8Array([...moof, ...box('mdat', [1, 2, 3])]);
+    expect(firstFrameMs(bytes.buffer)).toBeCloseTo(6000 / 90, 6);
+    expect(firstFrameMs(new Uint8Array([0, 0, 0, 8, 102, 114, 101, 101]).buffer)).toBe(0);
+    expect(firstFrameMs(new ArrayBuffer(3))).toBe(0);
   });
 });

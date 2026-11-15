@@ -592,6 +592,113 @@ Live view and timeline playback are "Version 2" in the spec, and the
 configuration file changes its schema, so the release version moves from
 1.0.0 to 2.0.0.
 
+### 54. The restream inside the worker
+
+- The camera goroutine only publishes its list of live sessions (one atomic
+  store) and, when a session is new, sends `restream_session`. It never calls
+  into the restream. The restream's pump notices that a session ended by
+  looking at that list every 250 ms, so a client of an ended session is
+  disconnected up to 250 ms late.
+- One pump goroutine per camera, running only while a client plays. It copies
+  the RTP header before writing, because the RTSP server stamps its own SSRC
+  on packets and fan-out packets are read-only.
+- A client that stops reading is disconnected at the first write error, not
+  waited for. `restreamDropped` therefore rises only when the pump itself
+  falls behind.
+- A second client for a session is refused with 503 at DESCRIBE already.
+  After a pump panic the camera answers 404 until its next session; the event
+  is `restream_failed` (warning).
+- `restream_session` is sent only while the restream is on, so
+  `live.mainStream: false` leaves no trace in a worker. A repeated identical
+  `restream` message answers with the same port; a new token starts a new
+  server.
+- "The file is identical with a viewer attached" is tested by comparing the
+  frame table (times, durations, sizes, flags) of a camera with a stuck
+  restream client against an unwatched camera recording the same stream.
+
+### 55. The live muxer and the stream hub
+
+- **Audio rides in fragments of its own.** Video fragments are the same for
+  every viewer; audio goes in audio-only fragments after each video frame,
+  only to viewers who asked for it. There are two initialization segments
+  (video, video with audio).
+- The G.711/G.726 converter of a main source is created with the first
+  listener and dropped with the last. A viewer who wants sound is held for
+  the moment it takes to build the audio header rather than started silent,
+  because a browser cannot add a track to a playing source buffer.
+- A frame's duration is predicted from the previous interval, so no frame
+  waits for the next one. The live timeline never has a hole: after a
+  reconnect, a jump or a change of session it simply continues one frame
+  later, and a reconnect with the same parameters sends no new `init`.
+- Headers change only at a keyframe. A viewer whose queue overflowed gets the
+  header again at the next keyframe.
+- The 2 s limit of a viewer's queue is the age of its oldest message, not
+  seconds of video: a new viewer legitimately receives a whole keyframe
+  interval at once. The pictures kept for new viewers are capped at 24 MB.
+- Retries: main stream every second; a sub stream with the recorder's
+  backoff; a wrong password, path or codec on a sub stream every 30 s.
+- A make-before-break switch is given up after 20 s without a keyframe.
+- A sub stream can be watched even when recording is switched off for the
+  camera. `audio=1` on a sub stream is ignored.
+
+### 56. The playback file server
+
+- A chunk runs from one keyframe-fragment to the next; fragments that do not
+  start with a keyframe belong to the chunk before them.
+- Index times are milliseconds with three decimals, so the player can get the
+  exact 90 kHz tick back and join files without a hole.
+- The index also carries `videoMime`, and `/play/keyframes` takes `init=1`:
+  keyframe-only fragments hold no audio, and appended to a buffer that
+  expects audio they stall playback, so keyframe mode plays in a video-only
+  source of its own.
+- A `.part.mp4` path is treated as growing whatever the request says. A
+  handle opened on it keeps working after the rename at close.
+- One shared handle per file, closed 30 s after its last use. The read budget
+  (40 MB/s) allows a burst of a quarter second, so a seek is answered at once.
+- H.265 files recorded by v1 keep `hev1` in their MIME string: Chrome plays
+  them, Safari is told it cannot and offers the download.
+- **The hourly seam.** About half the time the old file ends with the same
+  keyframe chunk the new file starts with, because both sessions delivered
+  it. The rule (in the stitch test and in the player): when the old file's
+  end overlaps the new file's start by more than half a frame, the old file's
+  trailing chunks from (new start − one frame) on are left out, and the new
+  file is placed exactly at the end of what was kept.
+
+### 57. The Live page
+
+- Every `init` message starts a fresh `MediaSource`; a parameter change
+  blinks once.
+- A WebSocket that is refused tells the page nothing, so the player asks the
+  same address with a plain request to read the reason for the tile.
+- The player holds 1.1× until it is under 0.5 s behind, and trims its buffer
+  to 10 s once 14 s are buffered. A backlog of 8 MB in the page reconnects.
+- A tile prefers the sub stream, then main; the single view prefers main,
+  then sub. A stream the browser cannot play is not tried again for that
+  tile.
+- Every view pages when it holds more cameras than its layout. The selected
+  view and the layout of "All cameras" stay per browser.
+- Importing version 1's views merges them into the user's own; declining
+  also counts as handled. "Share with everyone" copies a view to the shared
+  list and keeps the own one.
+- The sound button appears only for cameras whose recorder reports audio.
+
+### 58. The timeline player
+
+- Files are placed as a chain anchored at each seek; a seek outside the
+  buffer rebuilds the chain. A file after a gap is placed 5 s later on the
+  player's own timeline and the gap is jumped.
+- Times are shown in the browser's time zone, and a day runs from local
+  midnight to local midnight there (23 or 25 hours on clock-change days).
+  When the server's offset differs, the page says so.
+- Above 4× the player switches to keyframe mode when the browser drops more
+  than a quarter of the frames, and stays there until the speed is lowered.
+- Scrubbing starts on the first pointer move (a plain click just seeks) and
+  seeks at most every 150 ms.
+- In synchronized playback the first camera drives the clock. Corrections
+  stop when a player is within a quarter of the 150 ms tolerance.
+- The mouse wheel zooms the timeline; Shift+wheel pans it.
+- Thumbnails come from the first camera, one picture per 2 s of recording.
+
 ## Not verified here
 
 The build environment was Linux without a Windows machine. These parts are

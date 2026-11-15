@@ -71,23 +71,92 @@ export function anchor(span: Span, index: Pick<PlayIndex, 'start' | 'durationMs'
 }
 
 function wallStartOf(span: Span, index: Pick<PlayIndex, 'start'>): number {
-  const parsed = Date.parse(index.start);
+  const parsed = index.start ? Date.parse(index.start) : NaN; // a file may not say when it starts
   return Number.isNaN(parsed) ? span.startMs : parsed;
 }
 
 /**
- * Places the file that plays after `prev`. `prev.duration` must be final (the
- * previous file is closed and its index complete).
+ * The hourly rollover (spec 6.5): both camera sessions deliver the frames
+ * around the switch, so the old file can end with the keyframe chunk the new
+ * one starts with. When the old file overlaps the new one on the wall clock
+ * by more than half a frame, its trailing chunks that start at or after
+ * (new start − one frame) are left out; the new file is then placed exactly
+ * at the end of what was kept.
+ *
+ * Returns how many chunks of the old file to play and how long that is.
+ */
+export function seamKeep(
+  chunks: readonly PlayChunk[],
+  prevWallStartMs: number,
+  prevDurationMs: number,
+  nextWallStartMs: number,
+  frameMs: number,
+): { keep: number; keptMs: number } {
+  let keep = chunks.length;
+  const overlap = prevWallStartMs + prevDurationMs - nextWallStartMs;
+  if (overlap > frameMs / 2 && overlap < 5000) {
+    const cut = prevDurationMs - overlap;
+    while (keep > 1 && (chunks[keep - 1]?.[0] ?? -1) >= cut - frameMs) keep--;
+  }
+  const first = chunks[keep];
+  return { keep, keptMs: first !== undefined ? first[0] : prevDurationMs };
+}
+
+/**
+ * Duration of the first video sample of a fragment (moof + mdat), in
+ * milliseconds, or 0 when it cannot be read. The video track is track 1 with
+ * a 90 kHz timescale, as the recorder writes it.
+ */
+export function firstFrameMs(fragment: ArrayBuffer): number {
+  const view = new DataView(fragment);
+  const type = (o: number) => String.fromCharCode(view.getUint8(o + 4), view.getUint8(o + 5), view.getUint8(o + 6), view.getUint8(o + 7));
+  const child = (from: number, to: number, want: string, nth = 0): [number, number] | null => {
+    let o = from;
+    while (o + 8 <= to) {
+      const size = view.getUint32(o);
+      if (size < 8 || o + size > to) return null;
+      if (type(o) === want && nth-- === 0) return [o + 8, o + size];
+      o += size;
+    }
+    return null;
+  };
+  try {
+    const moof = child(0, view.byteLength, 'moof');
+    if (!moof) return 0;
+    for (let n = 0; n < 4; n++) {
+      const traf = child(moof[0], moof[1], 'traf', n);
+      if (!traf) return 0;
+      const tfhd = child(traf[0], traf[1], 'tfhd');
+      const trun = child(traf[0], traf[1], 'trun');
+      if (!tfhd || !trun || view.getUint32(tfhd[0] + 4) !== 1) continue;
+      const flags = view.getUint32(trun[0]) & 0xffffff;
+      if ((flags & 0x100) === 0 || view.getUint32(trun[0] + 4) === 0) return 0;
+      let o = trun[0] + 8;
+      if (flags & 0x1) o += 4;
+      if (flags & 0x4) o += 4;
+      return view.getUint32(o) / 90;
+    }
+  } catch {
+    // a cut-off fragment
+  }
+  return 0;
+}
+
+/**
+ * Places the file that plays after `prev`. `prev.duration` must be final: the
+ * previous file is closed, and what `seamKeep` left out is already taken off.
+ * The next file continues the previous one when it was recorded without a
+ * gap and starts within a second of the end of what was kept.
  */
 export function placeNext(
   prev: Placed,
-  prevSpan: Span,
   nextSpan: Span,
   nextIndex: Pick<PlayIndex, 'start' | 'durationMs'>,
 ): { placed: Placed; gap: PlacedGap | null } {
   const prevEnd = prev.mediaStart + prev.duration;
   const wallStartMs = wallStartOf(nextSpan, nextIndex);
-  if (continues(prevSpan, nextSpan)) {
+  const joined = !nextSpan.gapBefore && Math.abs(wallStartMs - (prev.wallStartMs + prev.duration * 1000)) <= JOIN_TOLERANCE_MS;
+  if (joined) {
     return {
       placed: { id: nextSpan.id, wallStartMs, mediaStart: prevEnd, duration: nextIndex.durationMs / 1000, afterGap: false },
       gap: null,
