@@ -14,3 +14,8 @@
 # local data roots used during development
 /data/
 /.buttercams/
+
+# release tooling (see docs/RELEASING.md)
+/.toolkit/
+/release-bundle/
+/release-plan.json

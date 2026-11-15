@@ -1,14 +1,19 @@
 # Builds the ButterCams installer on Windows.
 #
-#   pwsh installer\build.ps1 -Version 1.0.0
+#   pwsh installer\build.ps1 [-Version 1.0.0]
+#
+# Without -Version it builds the version in release.json. Writes to dist\:
+#   ButterCams-<version>-setup.exe         the installer
+#   ButterCams-<version>-windows-x64.exe   buttercams.exe on its own
 #
 # Needs Go, Node.js and Inno Setup 6 (iscc.exe on PATH, or in its default folder).
 param(
-    [string]$Version = "1.0.0"
+    [string]$Version = ""
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+if (-not $Version) { $Version = (Get-Content release.json -Raw | ConvertFrom-Json).apps.buttercams.version }
 
 Write-Host "== Building the web UI"
 Push-Location web
@@ -32,4 +37,5 @@ if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
 if (-not (Test-Path $iscc)) { throw "Inno Setup 6 (ISCC.exe) was not found" }
 & $iscc "/DAppVersion=$Version" installer\buttercams.iss
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
-Write-Host "Installer written to dist\ButterCams-$Version-setup.exe"
+Copy-Item dist\buttercams.exe "dist\ButterCams-$Version-windows-x64.exe" -Force
+Write-Host "Written to dist\: ButterCams-$Version-setup.exe, ButterCams-$Version-windows-x64.exe"

@@ -26,8 +26,17 @@ PCs on the network can open.
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Installing, configuring and troubleshooting |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | Choices made during the build, and what has not been verified yet |
 | [docs/API.md](docs/API.md) | REST API |
+| [docs/RELEASING.md](docs/RELEASING.md) | Versions, the changelog and publishing a release |
+| [CHANGELOG.md](CHANGELOG.md) | What changed in each version |
 | [docs/IDEAS.md](docs/IDEAS.md) | Ideas outside the specification |
 | [AGENTS.md](AGENTS.md) | Notes for coding agents |
+
+## Download
+
+The Windows installer (`ButterCams-<version>-setup.exe`) and the program on
+its own (`ButterCams-<version>-windows-x64.exe`) are on the
+[releases page](https://github.com/jxburros/ButterCams/releases).
+[docs/OPERATIONS.md](docs/OPERATIONS.md) covers installing.
 
 ## Build and try it
 
@@ -50,8 +59,10 @@ go run ./test/simulator/cmd/camsim --count 8 --audio pcmu
 Open `https://localhost:8650`, sign in, and add cameras with addresses
 `rtsp://127.0.0.1:8554/cam1` … `/cam8`.
 
-The Windows installer is built with `installer\build.ps1`; CI builds it on
-every push and attaches it to the run.
+The Windows installer and executable are built with `installer\build.ps1`;
+CI builds them on every push and attaches the installer to the run. Releases
+are published by the Release workflow, see
+[docs/RELEASING.md](docs/RELEASING.md).
 
 ## License
 

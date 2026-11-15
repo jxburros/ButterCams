@@ -482,6 +482,24 @@ need iOS 17.1 (the first with `ManagedMediaSource`); older ones get a message
 H.265 recordings are written that way from v2 on. Phone-size screens show at
 most four live tiles per page.
 
+## Releases
+
+### 44. Releases use the shared release infrastructure
+
+The owner asked for a Windows executable and a release pipeline built the
+way JX-Holdings-LLC/release-infrastructure does it. A release is started by
+hand and carries the installer, `buttercams.exe` on its own (it was only
+inside the installer before) and a checksum file. The toolkit's defaults are
+kept: tags `v<version>`, the `standard` security profile, and a version
+advance with a changelog section for every change to `main`. The first
+version is 1.0.0, the number the installer already used. `version.go` keeps
+a `-dev` suffix so a build that did not come from CI or a release says so.
+The service smoke test moved from the CI workflow to `installer\smoke.ps1`
+so the release build runs the same one. Nothing is code-signed (no
+certificate), and there is no self-update: spec section 3 rules out cloud
+services, and an upgrade is running the new installer. See
+`docs/RELEASING.md`.
+
 ## Not verified here
 
 The build environment was Linux without a Windows machine. These parts are
@@ -490,3 +508,9 @@ not run by hand on a server: the installer wizard, Windows Media Player
 playback, UNC shares with credentials, DPAPI, the Event Log, and the
 long-running acceptance criteria of spec 14.3 (72 h with 60 cameras, 30-day
 soak, Garrett's real cameras, DST on a real system clock).
+
+The Release workflow has not been run: the version checks, the Windows
+cross-build and the collection and verification of the release files were
+run locally with the toolkit, but the hosted run (Inno Setup, smoke test,
+draft, publication) happens for the first time when it is dispatched. Use
+the dry run first.

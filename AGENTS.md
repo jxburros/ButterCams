@@ -13,6 +13,10 @@ Then read:
   build them).
 - `docs/API.md` – the REST contract. Existing endpoints never change.
 - `docs/OPERATIONS.md` – the administrator's guide; keep it true.
+- `docs/RELEASING.md` – versions and releases. **Every change merged to
+  `main` must advance the version** in `release.json` and add its section to
+  `CHANGELOG.md` (the `bump` command there does both); the "Release
+  versions" check fails otherwise.
 - `docs/V2_PLAN.md` – the build plan for the next version, live view and
   timeline playback (spec section 16): order of work, code changes, tests.
 
@@ -30,7 +34,8 @@ Then read:
 | `internal/winsvc` | Everything Windows-specific, with stand-ins for other systems |
 | `web` | React + Vite settings page, embedded in the binary |
 | `test/simulator`, `test/chaos` | Camera simulator and chaos script |
-| `installer` | Inno Setup script and build script |
+| `installer` | Inno Setup script, build script and the service smoke test |
+| `release.json`, `.release`, `CHANGELOG.md` | Version, release configuration and release notes |
 
 ## Working here
 

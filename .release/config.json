@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "bumpPolicy": "every-main-change",
+  "apps": {
+    "buttercams": {
+      "tagPrefix": "v",
+      "paths": ["**"],
+      "versionFiles": [
+        {"path": "internal/version/version.go", "format": "text", "pattern": "^var Version = \"(?<version>[^\"]+)-dev\"$"},
+        {"path": "installer/buttercams.iss", "format": "text", "pattern": "^  #define AppVersion \"(?<version>[^\"]+)\"$"}
+      ],
+      "notes": "CHANGELOG.md",
+      "notesSection": true,
+      "assets": [
+        "ButterCams-{version}-setup.exe",
+        "ButterCams-{version}-windows-x64.exe"
+      ],
+      "security": "standard"
+    }
+  }
+}
