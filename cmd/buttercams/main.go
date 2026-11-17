@@ -5,6 +5,7 @@
 //	buttercams console        the same guardian in the foreground, for development
 //	buttercams worker --id N  a recorder worker (started by the guardian)
 //	buttercams mover          the copy and retention process (started by the guardian)
+//	buttercams media          the live view and playback server (started by the guardian)
 //	buttercams rebuild-index  rebuild the index from the files on disk
 //	buttercams setup ...      installer helpers (first configuration, service registration)
 //	buttercams version
@@ -26,6 +27,7 @@ import (
 	"github.com/jxburros/buttercams/internal/guardian"
 	"github.com/jxburros/buttercams/internal/index"
 	"github.com/jxburros/buttercams/internal/logx"
+	"github.com/jxburros/buttercams/internal/media"
 	"github.com/jxburros/buttercams/internal/mover"
 	"github.com/jxburros/buttercams/internal/naming"
 	"github.com/jxburros/buttercams/internal/version"
@@ -65,6 +67,8 @@ func main() {
 		err = runWorker(os.Args[2:])
 	case "mover":
 		err = runMover()
+	case "media":
+		err = runMedia()
 	case "rebuild-index":
 		err = runRebuildIndex(os.Args[2:])
 	case "setup":
@@ -123,6 +127,11 @@ func runWorker(args []string) error {
 func runMover() error {
 	ignoreInterrupt()
 	return mover.Run(context.Background(), os.Stdin, os.Stdout, logx.NewChild("mover"))
+}
+
+func runMedia() error {
+	ignoreInterrupt()
+	return media.Run(context.Background(), os.Stdin, os.Stdout, logx.NewChild("media"))
 }
 
 func validateEnv() config.Env { return config.Env{IsRemoteDrive: winsvc.IsRemoteDrive} }

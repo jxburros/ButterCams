@@ -43,6 +43,9 @@ type Server struct {
 	cert     atomic.Pointer[tls.Certificate]
 	certInfo atomic.Pointer[CertInfo]
 
+	routeList []RouteInfo
+	media     *mediaGate
+
 	mu      sync.Mutex
 	srv     *http.Server
 	cfg     config.Server
@@ -58,7 +61,8 @@ func NewServer(b Backend, dataRoot string, log *slog.Logger) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{backend: b, dataRoot: dataRoot, log: log.With("component", "api"), users: users,
-		sessions: newSessions(), hub: newHub()}
+		sessions: newSessions(), hub: newHub(), media: newMediaGate()}
+	s.hub.restrict, s.hub.limited = s.restrictStream, s.streamLimited
 	if users.Count() == 0 {
 		s.log.Warn("no user accounts exist yet; create the first administrator with: buttercams setup init --admin-user NAME --admin-password PASSWORD")
 	}
@@ -302,7 +306,7 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'")
+		h.Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; frame-ancestors 'none'")
 		if s.https.Load() {
 			h.Set("Strict-Transport-Security", "max-age=31536000")
 		}
@@ -339,7 +343,7 @@ func (s *Server) guard(level access, next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			if sess.role != RoleAdmin && r.URL.Path != "/api/v1/auth/logout" {
+			if sess.role != RoleAdmin && !viewerMayWrite[r.Method+" "+r.URL.Path] {
 				writeError(w, http.StatusForbidden, "forbidden", "This needs an administrator account.")
 				return
 			}
@@ -356,6 +360,13 @@ func (s *Server) guard(level access, next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), sessionKey, sess)))
 	}
+}
+
+// viewerMayWrite lists the only state-changing requests a Viewer may make:
+// signing out and saving their own views (spec 16.6).
+var viewerMayWrite = map[string]bool{
+	"POST /api/v1/auth/logout":    true,
+	"PUT /api/v1/live/views/mine": true,
 }
 
 func constantTimeEqual(a, b string) bool {
@@ -403,51 +414,95 @@ func readJSON(r *http.Request, v any) error {
 
 // ----------------------------------------------------------------- routes
 
+// CameraRule says how a route treats per-user camera limits (spec 16.6).
+// Every route declares one, and a test walks the list with a limited Viewer,
+// so a route added later cannot forget the limit.
+type CameraRule int
+
+// Camera rules.
+const (
+	CamNone     CameraRule = iota // the route names no camera and returns none
+	CamFiltered                   // what it returns is filtered to the user's cameras
+	CamChecked                    // it names one camera (or a segment of one) and refuses others
+	CamAdmin                      // Admins only; Admins always see every camera
+)
+
+// RouteInfo describes one registered API route.
+type RouteInfo struct {
+	Pattern string // "GET /api/v1/cameras"
+	Level   access
+	Cameras CameraRule
+}
+
+// Routes lists every API route.
+func (s *Server) Routes() []RouteInfo { return append([]RouteInfo(nil), s.routeList...) }
+
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
-	api := func(pattern string, level access, h http.HandlerFunc) {
+	s.routeList = nil
+	note := func(pattern string, level access, rule CameraRule) {
+		if level == accessAdmin {
+			rule = CamAdmin
+		}
+		s.routeList = append(s.routeList, RouteInfo{Pattern: pattern, Level: level, Cameras: rule})
+	}
+	api := func(pattern string, level access, rule CameraRule, h http.HandlerFunc) {
+		note(pattern, level, rule)
 		mux.Handle(pattern, timed(s.guard(level, h)))
+	}
+	// long registers a long-lived route: no 30 s limit (downloads, the event
+	// stream, live video and playback).
+	long := func(pattern string, level access, rule CameraRule, h http.HandlerFunc) {
+		note(pattern, level, rule)
+		mux.Handle(pattern, s.guard(level, h))
 	}
 	const p = "/api/v1"
 
-	api("POST "+p+"/auth/login", accessPublic, s.handleLogin)
-	api("POST "+p+"/auth/logout", accessViewer, s.handleLogout)
-	api("GET "+p+"/auth/session", accessViewer, s.handleSession)
+	api("POST "+p+"/auth/login", accessPublic, CamNone, s.handleLogin)
+	api("POST "+p+"/auth/logout", accessViewer, CamNone, s.handleLogout)
+	api("GET "+p+"/auth/session", accessViewer, CamNone, s.handleSession)
 
-	api("GET "+p+"/health", accessPublic, s.handleHealth)
+	api("GET "+p+"/health", accessPublic, CamFiltered, s.handleHealth)
 
-	api("GET "+p+"/cameras", accessViewer, s.handleCamerasList)
-	api("POST "+p+"/cameras", accessAdmin, s.handleCameraCreate)
-	api("POST "+p+"/cameras/test", accessAdmin, s.handleCameraTest)
-	api("POST "+p+"/cameras/import", accessAdmin, s.handleCameraImport)
-	api("PUT "+p+"/cameras/{id}", accessAdmin, s.handleCameraUpdate)
-	api("DELETE "+p+"/cameras/{id}", accessAdmin, s.handleCameraDelete)
+	api("GET "+p+"/cameras", accessViewer, CamFiltered, s.handleCamerasList)
+	api("POST "+p+"/cameras", accessAdmin, CamAdmin, s.handleCameraCreate)
+	api("POST "+p+"/cameras/test", accessAdmin, CamAdmin, s.handleCameraTest)
+	api("POST "+p+"/cameras/import", accessAdmin, CamAdmin, s.handleCameraImport)
+	api("PUT "+p+"/cameras/{id}", accessAdmin, CamAdmin, s.handleCameraUpdate)
+	api("DELETE "+p+"/cameras/{id}", accessAdmin, CamAdmin, s.handleCameraDelete)
 
-	api("GET "+p+"/destinations", accessViewer, s.handleDestinationsList)
-	api("POST "+p+"/destinations", accessAdmin, s.handleDestinationCreate)
-	api("POST "+p+"/destinations/test", accessAdmin, s.handleDestinationTest)
-	api("PUT "+p+"/destinations/{id}", accessAdmin, s.handleDestinationUpdate)
-	api("DELETE "+p+"/destinations/{id}", accessAdmin, s.handleDestinationDelete)
+	api("GET "+p+"/destinations", accessViewer, CamNone, s.handleDestinationsList)
+	api("POST "+p+"/destinations", accessAdmin, CamAdmin, s.handleDestinationCreate)
+	api("POST "+p+"/destinations/test", accessAdmin, CamAdmin, s.handleDestinationTest)
+	api("PUT "+p+"/destinations/{id}", accessAdmin, CamAdmin, s.handleDestinationUpdate)
+	api("DELETE "+p+"/destinations/{id}", accessAdmin, CamAdmin, s.handleDestinationDelete)
 
-	api("GET "+p+"/recordings/cameras", accessViewer, s.handleRecordingCameras)
-	api("GET "+p+"/segments", accessViewer, s.handleSegments)
-	mux.Handle("GET "+p+"/segments/{id}/download", s.guard(accessViewer, s.handleDownload)) // long-lived
+	api("GET "+p+"/recordings/cameras", accessViewer, CamFiltered, s.handleRecordingCameras)
+	api("GET "+p+"/segments", accessViewer, CamChecked, s.handleSegments)
+	long("GET "+p+"/segments/{id}/download", accessViewer, CamChecked, s.handleDownload)
+	api("GET "+p+"/timeline", accessViewer, CamChecked, s.handleTimeline)
+	long("GET "+p+"/segments/{id}/play/{what}", accessViewer, CamChecked, s.handlePlay)
 
-	api("GET "+p+"/events", accessViewer, s.handleEvents)
+	long("GET "+p+"/live/{camera}/{stream}", accessViewer, CamChecked, s.handleLive)
+	api("GET "+p+"/live/views", accessViewer, CamFiltered, s.handleViewsGet)
+	api("PUT "+p+"/live/views/mine", accessViewer, CamFiltered, s.handleViewsPutMine)
+	api("PUT "+p+"/live/views/shared", accessAdmin, CamAdmin, s.handleViewsPutShared)
 
-	api("GET "+p+"/system", accessViewer, s.handleSystemGet)
-	api("PUT "+p+"/system", accessAdmin, s.handleSystemPut)
-	api("POST "+p+"/system/rebuild-index", accessAdmin, s.handleRebuild)
-	api("POST "+p+"/system/certificate", accessAdmin, s.handleCertificate)
-	api("GET "+p+"/system/config/export", accessAdmin, s.handleConfigExport)
-	api("POST "+p+"/system/config/import", accessAdmin, s.handleConfigImport)
+	api("GET "+p+"/events", accessViewer, CamFiltered, s.handleEvents)
 
-	api("GET "+p+"/users", accessAdmin, s.handleUsersList)
-	api("POST "+p+"/users", accessAdmin, s.handleUserCreate)
-	api("PUT "+p+"/users/{username}", accessAdmin, s.handleUserUpdate)
-	api("DELETE "+p+"/users/{username}", accessAdmin, s.handleUserDelete)
+	api("GET "+p+"/system", accessViewer, CamFiltered, s.handleSystemGet)
+	api("PUT "+p+"/system", accessAdmin, CamAdmin, s.handleSystemPut)
+	api("POST "+p+"/system/rebuild-index", accessAdmin, CamAdmin, s.handleRebuild)
+	api("POST "+p+"/system/certificate", accessAdmin, CamAdmin, s.handleCertificate)
+	api("GET "+p+"/system/config/export", accessAdmin, CamAdmin, s.handleConfigExport)
+	api("POST "+p+"/system/config/import", accessAdmin, CamAdmin, s.handleConfigImport)
 
-	mux.Handle("GET "+p+"/stream", s.guard(accessViewer, s.handleStream)) // long-lived
+	api("GET "+p+"/users", accessAdmin, CamAdmin, s.handleUsersList)
+	api("POST "+p+"/users", accessAdmin, CamAdmin, s.handleUserCreate)
+	api("PUT "+p+"/users/{username}", accessAdmin, CamAdmin, s.handleUserUpdate)
+	api("DELETE "+p+"/users/{username}", accessAdmin, CamAdmin, s.handleUserDelete)
+
+	long("GET "+p+"/stream", accessViewer, CamFiltered, s.handleStream)
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "No such API endpoint.")

@@ -106,6 +106,48 @@ type User struct {
 	Role         string    `json:"role"`
 	PasswordHash string    `json:"passwordHash"`
 	CreatedAt    time.Time `json:"createdAt"`
+	// Cameras limits a Viewer to these camera ids; nil means every camera
+	// (spec 16.6). It is ignored for Admins, who always see everything.
+	Cameras *[]string `json:"cameras"`
+	// Views are the user's own saved views of the Live page.
+	Views []config.View `json:"views,omitempty"`
+}
+
+// Scope is the set of cameras a signed-in user may see.
+type Scope struct {
+	all bool
+	set map[string]bool
+}
+
+// AllCameras is the scope of Admins and of Viewers without a limit.
+var AllCameras = Scope{all: true}
+
+// All reports whether the scope has no limit.
+func (sc Scope) All() bool { return sc.all }
+
+// Allows reports whether the camera is inside the scope.
+func (sc Scope) Allows(cameraID string) bool { return sc.all || sc.set[cameraID] }
+
+// IDs returns the cameras of a limited scope, sorted.
+func (sc Scope) IDs() []string {
+	out := make([]string, 0, len(sc.set))
+	for id := range sc.set {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// scope returns what the user may see.
+func (u User) scope() Scope {
+	if u.Role == RoleAdmin || u.Cameras == nil {
+		return AllCameras
+	}
+	sc := Scope{set: make(map[string]bool, len(*u.Cameras))}
+	for _, id := range *u.Cameras {
+		sc.set[id] = true
+	}
+	return sc
 }
 
 type usersDoc struct {
@@ -208,6 +250,79 @@ func (s *UserStore) List() []User {
 	}
 	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Username) < strings.ToLower(out[j].Username) })
 	return out
+}
+
+// Get returns one account without its password hash.
+func (s *UserStore) Get(username string) (User, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := s.findLocked(username)
+	if i < 0 {
+		return User{}, false
+	}
+	u := s.users[i]
+	u.PasswordHash = ""
+	return u, true
+}
+
+// ScopeOf returns the cameras a user may see. An unknown user sees none.
+func (s *UserStore) ScopeOf(username string) Scope {
+	u, ok := s.Get(username)
+	if !ok {
+		return Scope{}
+	}
+	return u.scope()
+}
+
+// SetCameras limits a user to a list of cameras; nil removes the limit.
+func (s *UserStore) SetCameras(username string, cameras *[]string) (User, error) {
+	if cameras != nil {
+		seen := map[string]bool{}
+		clean := make([]string, 0, len(*cameras))
+		for _, id := range *cameras {
+			id = strings.TrimSpace(id)
+			if id == "" || seen[id] {
+				continue
+			}
+			if len(id) > 64 {
+				return User{}, FieldErr("cameras", "A camera id is too long.")
+			}
+			seen[id] = true
+			clean = append(clean, id)
+		}
+		if len(clean) > 1000 {
+			return User{}, FieldErr("cameras", "Too many cameras.")
+		}
+		cameras = &clean
+	}
+	return s.change(username, func(u *User) { u.Cameras = cameras })
+}
+
+// SetViews replaces a user's own saved views.
+func (s *UserStore) SetViews(username string, views []config.View) (User, error) {
+	views = config.NormalizeViews(views, nil)
+	if fields := config.ValidateViews(views, "views"); len(fields) > 0 {
+		return User{}, &config.ValidationError{Fields: fields}
+	}
+	return s.change(username, func(u *User) { u.Views = views })
+}
+
+func (s *UserStore) change(username string, fn func(*User)) (User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := s.findLocked(username)
+	if i < 0 {
+		return User{}, ErrNoSuchUser
+	}
+	prev := s.users[i]
+	fn(&s.users[i])
+	if err := s.saveLocked(); err != nil {
+		s.users[i] = prev
+		return User{}, err
+	}
+	u := s.users[i]
+	u.PasswordHash = ""
+	return u, nil
 }
 
 // Create adds an account.

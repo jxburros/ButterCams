@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -11,12 +10,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/bluenviron/mediacommon/v2/pkg/formats/fmp4"
-	"github.com/bluenviron/mediacommon/v2/pkg/formats/fmp4/seekablebuffer"
-	"github.com/bluenviron/mediacommon/v2/pkg/formats/mp4/codecs"
-
 	"github.com/jxburros/buttercams/internal/mp4meta"
 	"github.com/jxburros/buttercams/internal/naming"
+	"github.com/jxburros/buttercams/internal/stream"
 )
 
 // Fragmenting and flushing (spec 6.2).
@@ -29,51 +25,6 @@ const (
 	maxFragmentTicks = int64(MaxFragment / time.Second * mp4meta.VideoTimescale)
 	defaultFrameDur  = 3000 // 1/30 s at 90 kHz, used only for a one-frame file
 )
-
-// videoParams are the codec parameter sets a file is opened with.
-type videoParams struct {
-	codec string // "h264" or "h265"
-	vps   []byte
-	sps   []byte
-	pps   []byte
-}
-
-func (p videoParams) complete() bool {
-	if p.codec == "h265" {
-		return len(p.vps) > 0 && len(p.sps) > 0 && len(p.pps) > 0
-	}
-	return len(p.sps) > 0 && len(p.pps) > 0
-}
-
-func (p videoParams) equal(o videoParams) bool {
-	return p.codec == o.codec && bytes.Equal(p.vps, o.vps) && bytes.Equal(p.sps, o.sps) && bytes.Equal(p.pps, o.pps)
-}
-
-func (p videoParams) mp4Codec() codecs.Codec {
-	if p.codec == "h265" {
-		return &codecs.H265{VPS: p.vps, SPS: p.sps, PPS: p.pps}
-	}
-	return &codecs.H264{SPS: p.sps, PPS: p.pps}
-}
-
-// audioParams describe the audio track of a file.
-type audioParams struct {
-	name      string // "aac" or "opus": what is stored in the file
-	codec     codecs.Codec
-	timescale uint32
-}
-
-// sample is one access unit ready to be written.
-type sample struct {
-	video bool
-	pts   int64 // track timescale
-	dts   int64
-	dur   uint32 // audio only: nominal duration
-	key   bool
-	nalus [][]byte // video: the NAL units of the access unit, as received
-	data  []byte   // audio: the access unit
-	recv  time.Time
-}
 
 // closedSegment is the result of closing a file.
 type closedSegment struct {
@@ -99,8 +50,8 @@ type segment struct {
 	gap       bool
 	hourEnd   time.Time
 
-	vp       videoParams
-	ap       *audioParams
+	vp       stream.VideoParams
+	ap       *stream.AudioParams
 	audioOff bool // audio failed: dropped for the rest of this file
 
 	hash  hash.Hash
@@ -137,7 +88,7 @@ type segment struct {
 // openSegment creates <staging>/<camera>/<date>/<name>.part.mp4 and writes
 // the initialization segment. taken reports names (closed form) that must not
 // be reused even though no such file is on disk any more.
-func openSegment(staging, cameraID string, start time.Time, vp videoParams, ap *audioParams, gap bool,
+func openSegment(staging, cameraID string, start time.Time, vp stream.VideoParams, ap *stream.AudioParams, gap bool,
 	taken func(finalName string) bool) (*segment, error) {
 	start = mp4meta.TruncateStart(start).In(time.Local)
 	hour := naming.HourStart(start)
@@ -151,15 +102,11 @@ func openSegment(staging, cameraID string, start time.Time, vp videoParams, ap *
 			(taken != nil && taken(final))
 	})
 
-	tracks := []*fmp4.InitTrack{{ID: mp4meta.VideoTrackID, TimeScale: mp4meta.VideoTimescale, Codec: vp.mp4Codec()}}
-	if ap != nil {
-		tracks = append(tracks, &fmp4.InitTrack{ID: mp4meta.AudioTrackID, TimeScale: ap.timescale, Codec: ap.codec})
+	header, err := stream.InitSegment(vp, ap)
+	if err != nil {
+		return nil, err
 	}
-	var ib seekablebuffer.Buffer
-	if err := (fmp4.Init{Tracks: tracks}).Marshal(&ib); err != nil {
-		return nil, fmt.Errorf("building the MP4 header: %w", err)
-	}
-	init, err := mp4meta.AppendToMoov(ib.Bytes(), mp4meta.Udta(cameraID, start, gap))
+	init, err := mp4meta.AppendToMoov(header, mp4meta.Udta(cameraID, start, gap))
 	if err != nil {
 		return nil, err
 	}
@@ -203,15 +150,15 @@ func (s *segment) audioName() string {
 	if s.ap == nil {
 		return ""
 	}
-	return s.ap.name
+	return s.ap.Name
 }
 
 // writeVideo appends one video access unit. The first one must be a keyframe.
-func (s *segment) writeVideo(u sample) error {
+func (s *segment) writeVideo(u stream.Sample) error {
 	if s.vCount == 0 {
-		s.vOrigin = u.dts
+		s.vOrigin = u.DTS
 	}
-	rel := u.dts - s.vOrigin
+	rel := u.DTS - s.vOrigin
 	if n := len(s.vMeta); s.vCount > 0 {
 		d := rel - s.lastRel
 		if d <= 0 || d > 10*mp4meta.VideoTimescale {
@@ -222,30 +169,30 @@ func (s *segment) writeVideo(u sample) error {
 				d = defaultFrameDur
 			}
 			rel = s.lastRel + d
-			s.vOrigin = u.dts - rel
+			s.vOrigin = u.DTS - rel
 		}
 		if n > 0 {
 			s.vMeta[n-1].Duration = uint32(d)
 		}
 		s.lastDur = d
 	}
-	if len(s.vMeta) > 0 && (u.key || rel-s.fragStart >= maxFragmentTicks) {
+	if len(s.vMeta) > 0 && (u.Key || rel-s.fragStart >= maxFragmentTicks) {
 		if err := s.flush(); err != nil {
 			return err
 		}
 	}
 	if len(s.vMeta) == 0 {
-		s.fragStart, s.fragKey = rel, u.key
+		s.fragStart, s.fragKey = rel, u.Key
 	}
 	// The NAL units go into the file exactly as received, each behind its
 	// four-byte length.
 	before := len(s.vData)
-	for _, nalu := range u.nalus {
+	for _, nalu := range u.NALUs {
 		s.vData = binary.BigEndian.AppendUint32(s.vData, uint32(len(nalu)))
 		s.vData = append(s.vData, nalu...)
 	}
 	s.vMeta = append(s.vMeta, mp4meta.FragSample{
-		Size: uint32(len(s.vData) - before), PTSOffset: int32(u.pts - u.dts), NonSync: !u.key,
+		Size: uint32(len(s.vData) - before), PTSOffset: int32(u.PTS - u.DTS), NonSync: !u.Key,
 	})
 	s.lastRel = rel
 	s.vCount++
@@ -254,11 +201,11 @@ func (s *segment) writeVideo(u sample) error {
 
 // writeAudio appends one audio access unit. Audio problems never reach the
 // caller: they turn audio off for the rest of the file (spec 6.3).
-func (s *segment) writeAudio(u sample) {
+func (s *segment) writeAudio(u stream.Sample) {
 	if s.ap == nil || s.audioOff || s.vCount == 0 {
 		return
 	}
-	t := u.pts - s.vOrigin*int64(s.ap.timescale)/mp4meta.VideoTimescale
+	t := u.PTS - s.vOrigin*int64(s.ap.Timescale)/mp4meta.VideoTimescale
 	if t < 0 {
 		return // before the first video frame of this file
 	}
@@ -267,7 +214,7 @@ func (s *segment) writeAudio(u sample) {
 		if d <= 0 {
 			return // duplicate or reordered packet
 		}
-		if d > int64(s.ap.timescale)*3600 {
+		if d > int64(s.ap.Timescale)*3600 {
 			s.audioOff = true
 			return
 		}
@@ -278,9 +225,9 @@ func (s *segment) writeAudio(u sample) {
 		}
 		s.aFragBase = t
 	}
-	s.aData = append(s.aData, u.data...)
-	s.aMeta = append(s.aMeta, mp4meta.FragSample{Duration: u.dur, Size: uint32(len(u.data))})
-	s.aLastT, s.aLastNom = t, u.dur
+	s.aData = append(s.aData, u.Data...)
+	s.aMeta = append(s.aMeta, mp4meta.FragSample{Duration: u.Dur, Size: uint32(len(u.Data))})
+	s.aLastT, s.aLastNom = t, u.Dur
 }
 
 // flush writes the pending samples as one fragment: a moof, then an mdat
@@ -386,7 +333,7 @@ func (s *segment) close(reason string) (closedSegment, error) {
 		bytes:      s.bytes,
 		sha256:     hex.EncodeToString(s.hash.Sum(nil)),
 		gap:        s.gap,
-		videoCodec: s.vp.codec,
+		videoCodec: s.vp.Codec,
 		audioCodec: s.audioName(),
 	}, nil
 }

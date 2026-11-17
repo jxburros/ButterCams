@@ -112,6 +112,7 @@ type Guardian struct {
 	purged      map[string]time.Time
 	pendingDel  map[string]map[int64]bool // deletes sent to the mover, by destination
 	mover       *Proc
+	media       mediaState
 	health      api.Health
 	sticky      []api.Reason // reasons that last until the guardian restarts
 	rebuild     api.RebuildStatus
@@ -137,6 +138,7 @@ func New(opts Options) *Guardian {
 		purged:     map[string]time.Time{},
 		pendingDel: map[string]map[int64]bool{},
 		ready:      make(chan struct{}),
+		media:      mediaState{restreamToken: newToken(), restreams: map[int]int{}, shares: map[string]time.Time{}},
 	}
 }
 
@@ -314,6 +316,7 @@ func (g *Guardian) start() error {
 	// Children.
 	g.startMover()
 	g.assignAll()
+	g.syncMedia()
 
 	g.event(index.Event{Source: "guardian", Type: "service_started", Severity: ipc.SevInfo,
 		Data: map[string]any{"message": "ButterCams " + version.Version + " started.", "version": version.Version}})
@@ -342,6 +345,7 @@ func (g *Guardian) start() error {
 	}()
 	g.goLoop("health", healthEvery, g.runHealthCheck)
 	g.goLoop("memory", time.Minute, g.restartHeavyWorkers)
+	g.goLoop("media-memory", time.Minute, g.restartHeavyMedia)
 	g.goLoop("maintenance", time.Hour, g.maintain)
 	g.goLoop("stream", StreamInterval, g.publishLive)
 	return nil
@@ -393,8 +397,12 @@ func (g *Guardian) shutdown() {
 		procs = append(procs, w.proc)
 	}
 	mover := g.mover
+	media := g.media.proc
 	g.mu.Unlock()
 
+	if media != nil { // viewers first: nothing they do is worth waiting for
+		go g.safely("stop-media", func() { media.Stop(2 * time.Second) })
+	}
 	var wg sync.WaitGroup
 	for _, p := range procs {
 		wg.Add(1)

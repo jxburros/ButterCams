@@ -1,0 +1,163 @@
+/* Live view (spec 16.4): video inside the tiles and the single view. The
+ * tile, chip and editor styles are in styles.css. */
+
+.tile-video,
+.single-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.tile-video-on,
+.single-video-on {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tile-video,
+  .single-video {
+    transition: opacity 160ms ease;
+  }
+}
+
+.single-video-on {
+  pointer-events: auto;
+}
+
+/* Text over a moving picture needs the dark plate the name already has. */
+.tile-video-on ~ .tile-problem {
+  background: rgb(10 10 10 / 0.85);
+}
+
+.view-group {
+  flex: none;
+  align-self: center;
+  margin-left: 0.5rem;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.live-import {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.live-page-count {
+  align-self: center;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+}
+
+.live-grid {
+  touch-action: pan-y;
+}
+
+/* Full screen: the grid and the single view fill the screen on black. */
+.live-grid:fullscreen {
+  align-content: center;
+  padding: 6px;
+  background: #000;
+}
+
+.single-frame:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  aspect-ratio: auto;
+  border-radius: 0;
+  background: #000;
+}
+
+.single-frame:fullscreen .single-bar {
+  opacity: 0;
+}
+
+.single-frame:fullscreen:hover .single-bar,
+.single-frame:fullscreen .single-bar:focus-within {
+  opacity: 1;
+}
+
+/* Phones: the single view uses the whole width, and in landscape the whole
+ * height, so turning the phone gives a full picture. */
+@media (max-width: 699px) {
+  .single-frame .single-bar {
+    position: static;
+  }
+
+  .single-frame:fullscreen .single-bar {
+    position: absolute;
+  }
+
+  .single .single-frame {
+    aspect-ratio: auto;
+  }
+
+  .single-frame .single-video {
+    position: relative;
+    display: block;
+    aspect-ratio: 16 / 9;
+    height: auto;
+  }
+
+  .single-frame .single-message {
+    top: 0;
+    width: 90%;
+    aspect-ratio: 16 / 9;
+    justify-content: center;
+    transform: translate(-50%, 0);
+  }
+}
+
+@media (orientation: landscape) and (max-height: 500px) {
+  .single-frame .single-video {
+    max-height: 100vh;
+  }
+}
+
+/* Camera limits in the Users section and sub stream results in the camera form. */
+.camera-limit {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.camera-limit legend {
+  padding: 0;
+  font-weight: 600;
+}
+
+.media-sources {
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.9rem;
+}
+
+.media-sources li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.3rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.single-frame:fullscreen .single-video {
+  position: absolute;
+  height: 100%;
+  aspect-ratio: auto;
+  max-height: none;
+}

@@ -12,7 +12,7 @@ import (
 )
 
 // SchemaVersion is the config schema this build reads and writes.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // CamerasPerWorker is the number of cameras one recorder worker handles.
 const CamerasPerWorker = 6
@@ -35,6 +35,29 @@ type Config struct {
 	Logging       Logging       `json:"logging"`
 	Destinations  []Destination `json:"destinations"`
 	Cameras       []Camera      `json:"cameras"`
+	Live          Live          `json:"live"`
+}
+
+// Live configures live view and playback (spec 16.8).
+type Live struct {
+	// Enabled runs the media process. Off hides live view and playback.
+	Enabled bool `json:"enabled"`
+	// MainStream lets the recorder workers offer their loopback restream.
+	// Off, live view uses sub streams only.
+	MainStream bool `json:"mainStream"`
+	// Views are the shared views every user sees and Admins edit.
+	Views []View `json:"views"`
+}
+
+// MaxViews is the most views one list (shared, or one user's own) may hold.
+const MaxViews = 50
+
+// View is a saved arrangement of cameras on the Live page.
+type View struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Layout    int      `json:"layout"`
+	CameraIDs []string `json:"cameraIds"`
 }
 
 // Server configures the web UI / API listener.
@@ -90,8 +113,11 @@ type Camera struct {
 	RecordAudio    bool     `json:"recordAudio"`
 	DestinationIDs []string `json:"destinationIds"`
 
-	// Reserved for later versions: saved and loaded, never used in v1.
-	SubStreamPath *string                    `json:"subStreamPath"`
+	// SubStreamPath is the path of the camera's low-resolution stream, used
+	// by the live grid (spec 16.3). It is never recorded. nil = none.
+	SubStreamPath *string `json:"subStreamPath"`
+
+	// Reserved for later versions: saved and loaded, never used.
 	RecordingMode string                     `json:"recordingMode"`
 	Extensions    map[string]json.RawMessage `json:"extensions"`
 }
@@ -114,6 +140,7 @@ func Default(stagingPath string) *Config {
 		Logging:      Logging{RetentionDays: DefaultLogRetentionDays},
 		Destinations: []Destination{},
 		Cameras:      []Camera{},
+		Live:         Live{Enabled: true, MainStream: true, Views: []View{}},
 	}
 }
 
@@ -168,7 +195,90 @@ func (c *Config) Normalize() {
 		if cam.Extensions == nil {
 			cam.Extensions = map[string]json.RawMessage{}
 		}
+		if cam.SubStreamPath != nil {
+			if sub := strings.TrimSpace(*cam.SubStreamPath); sub == "" {
+				cam.SubStreamPath = nil
+			} else {
+				cam.SubStreamPath = &sub
+			}
+		}
 	}
+	known := map[string]bool{}
+	for _, cam := range c.Cameras {
+		known[cam.ID] = true
+	}
+	c.Live.Views = NormalizeViews(c.Live.Views, func(id string) bool { return known[id] })
+}
+
+// NormalizeViews trims names and removes cameras that keep reports as gone,
+// so that deleting a camera never leaves a view pointing at nothing. keep nil
+// keeps every camera.
+func NormalizeViews(views []View, keep func(cameraID string) bool) []View {
+	out := make([]View, 0, len(views))
+	for _, v := range views {
+		v.Name = strings.TrimSpace(v.Name)
+		ids := make([]string, 0, len(v.CameraIDs))
+		for _, id := range v.CameraIDs {
+			if keep == nil || keep(id) {
+				ids = append(ids, id)
+			}
+		}
+		v.CameraIDs = ids
+		out = append(out, v)
+	}
+	return out
+}
+
+// ValidateViews checks a list of views; field names start with prefix.
+func ValidateViews(views []View, prefix string) []FieldError {
+	var out []FieldError
+	add := func(field, msg string) { out = append(out, FieldError{Field: field, Message: msg}) }
+	if len(views) > MaxViews {
+		add(prefix, fmt.Sprintf("At most %d views can be saved.", MaxViews))
+	}
+	seen := map[string]bool{}
+	for i, v := range views {
+		f := func(name string) string { return fmt.Sprintf("%s[%d].%s", prefix, i, name) }
+		switch {
+		case !viewIDRe.MatchString(v.ID) || v.ID == "all":
+			add(f("id"), "The view id may contain letters, digits, hyphens and underscores, 1 to 64 characters.")
+		case seen[v.ID]:
+			add(f("id"), fmt.Sprintf("Another view already uses the id %q.", v.ID))
+		}
+		seen[v.ID] = true
+		if v.Name == "" {
+			add(f("name"), "Give the view a name.")
+		} else if len(v.Name) > 60 {
+			add(f("name"), "The name is too long (60 characters at most).")
+		}
+		if v.Layout != 1 && v.Layout != 4 && v.Layout != 9 && v.Layout != 16 {
+			add(f("layout"), "The layout must be 1, 4, 9 or 16 tiles.")
+		}
+		if len(v.CameraIDs) > 64 {
+			add(f("cameraIds"), "A view can hold at most 64 cameras.")
+		}
+		dup := map[string]bool{}
+		for _, id := range v.CameraIDs {
+			if dup[id] {
+				add(f("cameraIds"), fmt.Sprintf("Camera %q is listed twice.", id))
+			}
+			dup[id] = true
+		}
+	}
+	return out
+}
+
+var viewIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// SubURL returns the RTSP URL of the camera's sub stream without
+// credentials, and false when the camera has none.
+func (c Camera) SubURL() (string, bool) {
+	if c.SubStreamPath == nil || *c.SubStreamPath == "" {
+		return "", false
+	}
+	sub := c
+	sub.Path = *c.SubStreamPath
+	return sub.URL(), true
 }
 
 // Clone returns a deep copy.

@@ -15,6 +15,7 @@ import (
 
 	"github.com/jxburros/buttercams/internal/config"
 	"github.com/jxburros/buttercams/internal/ipc"
+	"github.com/jxburros/buttercams/internal/restream"
 	"github.com/jxburros/buttercams/internal/winsvc"
 )
 
@@ -41,7 +42,14 @@ type Worker struct {
 	staging string
 
 	sessionSeq atomic.Uint64
-	statNow    chan string // camera ids whose state just changed
+
+	// The loopback restream (spec 16.3); nil while it is switched off. Only
+	// the message loop changes rs and rsToken.
+	rs           atomic.Pointer[restream.Server]
+	rsToken      string
+	restreamOn   atomic.Bool
+	testPumpHook atomic.Pointer[func(cameraID string)]
+	statNow      chan string // camera ids whose state just changed
 
 	// now is the wall clock. It is time.Now except in tests, which shift it
 	// to bring an hour boundary close.
@@ -225,6 +233,8 @@ func (w *Worker) handle(m any) (stop bool) {
 			c.SetStaging(msg.StagingPath)
 		}
 		w.mu.Unlock()
+	case *ipc.Restream:
+		w.setRestream(msg)
 	case *ipc.Shutdown:
 		return true
 	}
@@ -263,6 +273,7 @@ func (w *Worker) reportStats(now time.Time) {
 // shutdown stops every camera and waits for the files to be finalized.
 func (w *Worker) shutdown(why string) {
 	w.log.Info("worker stopping", "reason", why)
+	w.closeRestream() // viewers first: nothing they do is worth waiting for
 	w.mu.Lock()
 	cams := make([]*Camera, 0, len(w.cams))
 	for _, c := range w.cams {

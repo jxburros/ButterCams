@@ -88,3 +88,7 @@ func ProcessMemoryBytes() uint64 {
 	}
 	return pages * uint64(os.Getpagesize())
 }
+
+// OpenShared opens a file read-only without preventing others from writing,
+// renaming or deleting it. That is how every open works outside Windows.
+func OpenShared(path string) (*os.File, error) { return os.Open(path) }

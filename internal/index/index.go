@@ -494,6 +494,29 @@ func (d *DB) ListSegments(cameraID, date string) ([]Segment, error) {
 		ORDER BY julianday(start_ts), id`, cameraID, cameraID+`\_`+date+`\_%`)
 }
 
+// TimelineSegments returns a camera's segments that overlap [from, to),
+// oldest first, including the one still being recorded (spec 16.5). Copies
+// are not loaded: the timeline only draws spans.
+func (d *DB) TimelineSegments(cameraID string, from, to time.Time) ([]Segment, error) {
+	rows, err := d.r.Query(`SELECT `+segmentCols+` FROM segments
+		WHERE camera_id = ? AND julianday(start_ts) < julianday(?)
+		AND (end_ts IS NULL OR julianday(end_ts) > julianday(?))
+		ORDER BY julianday(start_ts), id`, cameraID, fmtTime(to), fmtTime(from))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Segment
+	for rows.Next() {
+		s, err := scanSegment(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // AllSegments returns every segment, oldest first. Used by tests and by the
 // rebuild comparison.
 func (d *DB) AllSegments() ([]Segment, error) {
@@ -739,6 +762,13 @@ type EventFilter struct {
 	CameraID string
 	Before   int64 // only events with a smaller id; 0 = newest
 	Limit    int
+	// Until, when set, keeps only events before it.
+	Until time.Time
+	// OnlyCameras, when not nil, keeps only events that belong to one of
+	// these cameras; events without a camera are left out (spec 16.6).
+	OnlyCameras []string
+	// Oldest returns the events oldest first instead of newest first.
+	Oldest bool
 }
 
 // ListEvents returns events newest first.
@@ -761,6 +791,25 @@ func (d *DB) ListEvents(f EventFilter) ([]Event, error) {
 		where = append(where, "id < ?")
 		args = append(args, f.Before)
 	}
+	if !f.Until.IsZero() {
+		where = append(where, "julianday(ts) < julianday(?)")
+		args = append(args, fmtTime(f.Until))
+	}
+	if f.OnlyCameras != nil {
+		if len(f.OnlyCameras) == 0 {
+			return nil, nil
+		}
+		marks := make([]string, len(f.OnlyCameras))
+		for i, id := range f.OnlyCameras {
+			marks[i] = "?"
+			args = append(args, id)
+		}
+		where = append(where, "camera_id IN ("+strings.Join(marks, ",")+")")
+	}
+	order := "DESC"
+	if f.Oldest {
+		order = "ASC"
+	}
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 200
@@ -770,7 +819,7 @@ func (d *DB) ListEvents(f EventFilter) ([]Event, error) {
 	}
 	args = append(args, limit)
 	rows, err := d.r.Query(`SELECT id, ts, source, type, severity, COALESCE(camera_id, ''), COALESCE(data, '')
-		FROM events WHERE `+strings.Join(where, " AND ")+` ORDER BY id DESC LIMIT ?`, args...)
+		FROM events WHERE `+strings.Join(where, " AND ")+` ORDER BY id `+order+` LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -171,6 +171,11 @@ func (g *Guardian) runHealthCheck() {
 		add(ipc.SevCritical, "database_write_failed", "The database does not accept writes: "+err.Error(), "")
 	}
 
+	// Live view (spec 16.2): a Warning at most, recording is not affected.
+	if r, down := g.mediaHealth(now); down {
+		reasons = append(reasons, r)
+	}
+
 	reasons = append(reasons, sticky...)
 
 	// 10.2: the recording itself. The file on disk must have grown since the
