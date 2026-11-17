@@ -140,10 +140,69 @@ func Validate(c *Config, env Env) error {
 		camIDs[cam.ID] = true
 	}
 
+	// live
+	validateViews(ve, "live.views", c.Live.Views, camIDs)
+
 	if len(ve.Fields) > 0 {
 		return ve
 	}
 	return nil
+}
+
+// ValidateViews checks a list of saved views (the shared ones in config.json,
+// or one user's own). Every camera must exist.
+func ValidateViews(views []View, cameraExists func(string) bool) error {
+	ve := &ValidationError{}
+	validateViewList(ve, "views", views, cameraExists)
+	if len(ve.Fields) > 0 {
+		return ve
+	}
+	return nil
+}
+
+func validateViews(ve *ValidationError, prefix string, views []View, camIDs map[string]bool) {
+	validateViewList(ve, prefix, views, func(id string) bool { return camIDs[id] })
+}
+
+func validateViewList(ve *ValidationError, prefix string, views []View, cameraExists func(string) bool) {
+	if len(views) > MaxViews {
+		ve.add(prefix, "At most %d views can be saved.", MaxViews)
+	}
+	seen := map[string]bool{}
+	for i, v := range views {
+		f := func(name string) string { return fmt.Sprintf("%s[%d].%s", prefix, i, name) }
+		if !naming.ValidID(v.ID) {
+			ve.add(f("id"), "The view id may contain lowercase letters, digits and hyphens, 1 to 48 characters.")
+		} else if seen[v.ID] {
+			ve.add(f("id"), "Another view already uses the id %q.", v.ID)
+		}
+		seen[v.ID] = true
+		if strings.TrimSpace(v.Name) == "" {
+			ve.add(f("name"), "Give the view a name.")
+		} else if len([]rune(v.Name)) > MaxViewNameLength {
+			ve.add(f("name"), "The view name is too long (%d characters at most).", MaxViewNameLength)
+		}
+		okLayout := false
+		for _, l := range Layouts {
+			okLayout = okLayout || v.Layout == l
+		}
+		if !okLayout {
+			ve.add(f("layout"), "The layout must be 1, 4, 9 or 16 tiles.")
+		}
+		if len(v.CameraIDs) > MaxViewCameras {
+			ve.add(f("cameraIds"), "A view can hold at most %d cameras.", MaxViewCameras)
+		}
+		dup := map[string]bool{}
+		for _, id := range v.CameraIDs {
+			if !cameraExists(id) {
+				ve.add(f("cameraIds"), "Camera %q does not exist.", id)
+			}
+			if dup[id] {
+				ve.add(f("cameraIds"), "Camera %q is listed twice.", id)
+			}
+			dup[id] = true
+		}
+	}
 }
 
 func validateDestination(ve *ValidationError, f func(string) string, d Destination, env Env) {
@@ -211,6 +270,13 @@ func validateCamera(ve *ValidationError, f func(string) string, cam Camera, dest
 		ve.add(f("path"), "The stream path must start with /.")
 	} else if strings.ContainsAny(cam.Path, " \t\r\n") {
 		ve.add(f("path"), "The stream path cannot contain spaces.")
+	}
+	if cam.SubStreamPath != nil && *cam.SubStreamPath != "" {
+		if sp := *cam.SubStreamPath; !strings.HasPrefix(sp, "/") {
+			ve.add(f("subStreamPath"), "The sub stream path must start with /.")
+		} else if strings.ContainsAny(sp, " \t\r\n") {
+			ve.add(f("subStreamPath"), "The sub stream path cannot contain spaces.")
+		}
 	}
 	if cam.Transport != "tcp" && cam.Transport != "udp" {
 		ve.add(f("transport"), `Transport must be "tcp" or "udp".`)

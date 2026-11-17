@@ -67,3 +67,12 @@ func PrepareChild(cmd *exec.Cmd) {
 		CreationFlags: windows.CREATE_NO_WINDOW | windows.CREATE_NEW_PROCESS_GROUP,
 	}
 }
+
+// SetLowPriority makes a child start at below-normal priority, so that when
+// the CPU is busy the recorders win (spec 16.2). Call it after PrepareChild.
+func SetLowPriority(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.CreationFlags |= windows.BELOW_NORMAL_PRIORITY_CLASS
+}

@@ -39,7 +39,7 @@ func (c ctxReader) Read(p []byte) (int, error) {
 }
 
 func hashFile(ctx context.Context, path string, buf []byte) (string, int64, error) {
-	f, err := os.Open(path)
+	f, err := winsvc.OpenShared(path)
 	if err != nil {
 		return "", 0, err
 	}
@@ -72,7 +72,7 @@ func copyFile(ctx context.Context, job *ipc.CopyJob, dest config.Destination) (s
 	if !ok {
 		return "", 0, fmt.Errorf("%q is not a ButterCams recording name", job.FileName)
 	}
-	src, err := os.Open(job.SourcePath)
+	src, err := winsvc.OpenShared(job.SourcePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", 0, errSourceMissing

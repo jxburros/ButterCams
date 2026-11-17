@@ -88,3 +88,7 @@ func ProcessMemoryBytes() uint64 {
 	}
 	return pages * uint64(os.Getpagesize())
 }
+
+// OpenShared opens a file for reading. On other systems an open file never
+// prevents a rename or a delete, so this is os.Open.
+func OpenShared(path string) (*os.File, error) { return os.Open(path) }

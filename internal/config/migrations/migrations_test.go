@@ -49,7 +49,18 @@ func TestRunRefusesNewerAndBrokenDocuments(t *testing.T) {
 }
 
 func TestV1RegistersNoMigrations(t *testing.T) {
-	if got := Registered(); len(got) != 0 {
-		t.Fatalf("v1 has no migrations, found %v", got)
+	if got := Registered(); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("expected exactly the v1 to v2 migration, found %v", got)
+	}
+}
+
+func TestV1ToV2AddsLive(t *testing.T) {
+	doc := map[string]any{"schemaVersion": float64(1), "cameras": []any{}}
+	if _, err := Run(doc, 2); err != nil {
+		t.Fatal(err)
+	}
+	live, ok := doc["live"].(map[string]any)
+	if !ok || live["enabled"] != true || live["mainStream"] != true || doc["schemaVersion"] != float64(2) {
+		t.Fatalf("doc=%v", doc)
 	}
 }

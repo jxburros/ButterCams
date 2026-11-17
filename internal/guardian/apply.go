@@ -256,7 +256,7 @@ func (g *Guardian) OpenSegment(ctx context.Context, id int64) (*os.File, index.S
 					winsvc.ConnectShare(c.dest.Path, c.dest.Username, pw)
 				}
 			}
-			f, err := os.Open(c.path)
+			f, err := winsvc.OpenShared(c.path)
 			ch <- result{f, err}
 		}(c)
 		select {

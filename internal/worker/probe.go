@@ -24,6 +24,84 @@ type ProbeResult struct {
 	AudioNote            string   `json:"audioNote"`
 	SecondSessionAllowed *bool    `json:"secondSessionAllowed"`
 	Warnings             []string `json:"warnings"`
+	// Sub is the result for the sub stream; nil when none is configured.
+	Sub *SubProbeResult `json:"sub"`
+}
+
+// SubProbeResult describes a camera's sub stream (spec 16.8).
+type SubProbeResult struct {
+	OK         bool     `json:"ok"`
+	Error      string   `json:"error"`
+	VideoCodec string   `json:"videoCodec"`
+	Width      int      `json:"width"`
+	Height     int      `json:"height"`
+	Warnings   []string `json:"warnings"`
+}
+
+// Sub-stream advice shown by the connection test.
+const (
+	SubH265Warning  = "Set the sub stream to H.264 so every browser can show the grid."
+	SubLargeWarning = "The sub stream is larger than 1280×720. A smaller sub stream keeps the live grid smooth."
+	NoSubWarning    = "No sub stream is set. The live grid will use the main stream, which needs more bandwidth; set a sub stream if the camera has one."
+)
+
+// ProbeSub connects to a camera's sub stream once and reports its codec and
+// picture size. The stream is never recorded.
+func ProbeSub(ctx context.Context, cam config.Camera, password string) *SubProbeResult {
+	res := &SubProbeResult{Warnings: []string{}}
+	if !cam.HasSub() {
+		return nil
+	}
+	sub := cam
+	sub.Path = *cam.SubStreamPath
+	sub.RecordAudio = false
+	pkts := make(chan *Packet, 1024)
+	sess, err := dialSession(ctx, dialOptions{id: 3, cam: sub, password: password, onPacket: func(p *Packet) {
+		select {
+		case pkts <- p:
+		default:
+		}
+	}})
+	if err != nil {
+		res.Error = classifyDialError(err).msg
+		return res
+	}
+	defer sess.close()
+	proc, perr := newProcessor(sess)
+	if perr != nil {
+		res.Error = perr.Error()
+		return res
+	}
+	res.VideoCodec = sess.videoCodec
+	// The picture size comes from the parameter sets: in the SDP, or with the
+	// first keyframe.
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+wait:
+	for {
+		if w, _ := proc.Size(); w > 0 {
+			break
+		}
+		select {
+		case p := <-pkts:
+			proc.Push(p)
+		case <-sess.done:
+			break wait
+		case <-deadline.C:
+			break wait
+		case <-ctx.Done():
+			break wait
+		}
+	}
+	res.OK = true
+	res.Width, res.Height = proc.Size()
+	if res.VideoCodec == "h265" {
+		res.Warnings = append(res.Warnings, SubH265Warning)
+	}
+	if res.Width*res.Height > 1280*720 {
+		res.Warnings = append(res.Warnings, SubLargeWarning)
+	}
+	return res
 }
 
 // probeWatch is how long the probe watches the stream to measure it.
@@ -55,8 +133,8 @@ func Probe(ctx context.Context, cam config.Camera, password string) ProbeResult 
 
 	res.VideoCodec = sess.videoCodec
 	switch {
-	case proc.audioErr != "":
-		res.AudioNote = proc.audioErr
+	case proc.AudioErr() != "":
+		res.AudioNote = proc.AudioErr()
 	case sess.audio != nil:
 		res.AudioCodec = sess.audio.source
 		if sess.audio.source != "aac" && sess.audio.source != "opus" {
@@ -78,20 +156,20 @@ watch:
 	for {
 		select {
 		case p := <-pkts:
-			for _, u := range proc.push(p) {
-				if !u.video {
+			for _, u := range proc.Push(p) {
+				if !u.Video {
 					continue
 				}
 				if frames == 0 {
-					firstDTS = u.dts
+					firstDTS = u.DTS
 				}
 				frames++
-				lastDTS = u.dts
-				if u.key {
-					if lastKey != 0 && u.dts > lastKey {
-						intervals = append(intervals, u.dts-lastKey)
+				lastDTS = u.DTS
+				if u.Key {
+					if lastKey != 0 && u.DTS > lastKey {
+						intervals = append(intervals, u.DTS-lastKey)
 					}
-					lastKey = u.dts
+					lastKey = u.DTS
 				}
 			}
 			if len(intervals) >= 2 && frames >= 30 {
@@ -112,7 +190,7 @@ watch:
 		return res
 	}
 	res.OK = true
-	res.Width, res.Height = proc.width, proc.height
+	res.Width, res.Height = proc.Size()
 	if frames > 1 && lastDTS > firstDTS {
 		fps := float64(frames-1) * mp4meta.VideoTimescale / float64(lastDTS-firstDTS)
 		res.FPS = float64(int(fps*10+0.5)) / 10

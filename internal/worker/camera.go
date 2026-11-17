@@ -16,6 +16,7 @@ import (
 	"github.com/jxburros/buttercams/internal/ipc"
 	"github.com/jxburros/buttercams/internal/mp4meta"
 	"github.com/jxburros/buttercams/internal/naming"
+	"github.com/jxburros/buttercams/internal/stream"
 )
 
 // Hourly rollover timing (spec 6.5).
@@ -119,9 +120,9 @@ type Camera struct {
 	jumpPending bool
 
 	cur      *session
-	proc     *processor
+	proc     *stream.Processor
 	next     *session
-	nextProc *processor
+	nextProc *stream.Processor
 	seg      *segment
 	roll     rollState
 
@@ -476,18 +477,18 @@ func (c *Camera) dial() (*session, *dialError, ctlAction) {
 
 func (c *Camera) noteAudio() {
 	note := c.cur.audioNote
-	if c.proc.audioErr != "" {
-		note = c.proc.audioErr
+	if c.proc.AudioErr() != "" {
+		note = c.proc.AudioErr()
 	}
 	audioCodec := ""
-	if c.proc.audioParams != nil {
-		audioCodec = c.proc.audioParams.name
+	if c.proc.AudioParams() != nil {
+		audioCodec = c.proc.AudioParams().Name
 	}
 	c.mu.Lock()
 	c.st.videoCodec = c.cur.videoCodec
 	c.st.audioCodec = audioCodec
 	c.st.audioNote = note
-	c.st.width, c.st.height = c.proc.width, c.proc.height
+	c.st.width, c.st.height = c.proc.Size()
 	c.mu.Unlock()
 	if note != "" && note != c.audioWarned {
 		c.audioWarned = note
@@ -578,23 +579,23 @@ func (c *Camera) sessionError(s *session) string {
 func (c *Camera) handlePacket(pkt *Packet) (outcome, string, bool) {
 	switch {
 	case pkt.Session == c.cur.id:
-		for _, u := range c.proc.push(pkt) {
+		for _, u := range c.proc.Push(pkt) {
 			if out, msg, done := c.handleSample(u); done {
 				return out, msg, true
 			}
 		}
-		if c.proc.audioErr != "" && c.proc.audioErr != c.audioWarned {
+		if c.proc.AudioErr() != "" && c.proc.AudioErr() != c.audioWarned {
 			c.noteAudio()
 		}
 	case c.next != nil && pkt.Session == c.next.id:
-		for _, u := range c.nextProc.push(pkt) {
+		for _, u := range c.nextProc.Push(pkt) {
 			if c.next == nil { // took over earlier in this packet
 				if out, msg, done := c.handleSample(u); done {
 					return out, msg, true
 				}
 				continue
 			}
-			if u.video && u.key && !u.recv.Before(c.roll.switchAfter) {
+			if u.Video && u.Key && !u.Recv.Before(c.roll.switchAfter) {
 				if out, msg, done := c.switchTo(u); done {
 					return out, msg, true
 				}
@@ -606,7 +607,7 @@ func (c *Camera) handlePacket(pkt *Packet) (outcome, string, bool) {
 
 // handleSample writes one sample of the current session.
 func (c *Camera) handleSample(u sample) (outcome, string, bool) {
-	if !u.video {
+	if !u.Video {
 		if c.seg != nil {
 			c.seg.writeAudio(u)
 		}
@@ -615,37 +616,37 @@ func (c *Camera) handleSample(u sample) (outcome, string, bool) {
 
 	c.mu.Lock()
 	c.st.frames++
-	if u.key && c.lastKeyDTS != 0 && u.dts > c.lastKeyDTS {
-		c.st.kfMs = int((u.dts - c.lastKeyDTS) * 1000 / mp4meta.VideoTimescale)
+	if u.Key && c.lastKeyDTS != 0 && u.DTS > c.lastKeyDTS {
+		c.st.kfMs = int((u.DTS - c.lastKeyDTS) * 1000 / mp4meta.VideoTimescale)
 	}
 	c.mu.Unlock()
-	if u.key {
-		c.lastKeyDTS = u.dts
+	if u.Key {
+		c.lastKeyDTS = u.DTS
 	}
 
 	switch {
 	case c.seg == nil:
-		if !u.key {
+		if !u.Key {
 			return 0, "", false
 		}
-		c.proc.takeParamsDirty()
+		c.proc.TakeParamsDirty()
 		if err := c.openSegment(u, c.gapNext); err != nil {
 			return outWrite, err.Error(), true
 		}
 		c.gapNext = false
-	case u.key:
+	case u.Key:
 		// Check the clock here as well as in tick, so a jump across the hour
 		// is recorded as a clock change and not as an ordinary rollover.
-		if c.clockJumped(u.recv) {
-			c.onClockJump(u.recv)
+		if c.clockJumped(u.Recv) {
+			c.onClockJump(u.Recv)
 		}
 		reason := ""
 		switch {
-		case c.proc.takeParamsDirty() && !c.proc.params.equal(c.seg.vp):
+		case c.proc.TakeParamsDirty() && !c.proc.Params().Equal(c.seg.vp):
 			reason = ipc.ReasonParamChange
 		case c.jumpPending:
 			reason = ipc.ReasonClockJump
-		case !c.single && !c.roll.pending && !u.recv.Before(c.seg.hourEnd):
+		case !c.single && !c.roll.pending && !u.Recv.Before(c.seg.hourEnd):
 			// The hour is over and no second session is taking over: start
 			// the new hour's file on this session.
 			reason = ipc.ReasonHourRollover
@@ -675,10 +676,10 @@ func (c *Camera) switchTo(u sample) (outcome, string, bool) {
 	c.prevBytes = c.cur.bytes.Load()
 	c.roll.pending = false
 	c.roll.refreshAt = time.Time{}
-	c.roll.boundary = naming.NextBoundary(u.recv)
-	c.lastKeyDTS = u.dts
+	c.roll.boundary = naming.NextBoundary(u.Recv)
+	c.lastKeyDTS = u.DTS
 	c.jumpPending = false
-	c.proc.takeParamsDirty()
+	c.proc.TakeParamsDirty()
 
 	if err := c.openSegment(u, false); err != nil {
 		go old.close()
@@ -701,7 +702,7 @@ func (c *Camera) switchTo(u sample) (outcome, string, bool) {
 func (c *Camera) nameTaken(final string) bool { return c.used[final] }
 
 func (c *Camera) openSegment(u sample, gap bool) error {
-	seg, err := openSegment(c.staging, c.id, u.recv, c.proc.params, c.proc.audioParams, gap, c.nameTaken)
+	seg, err := openSegment(c.staging, c.id, u.Recv, c.proc.Params(), c.proc.AudioParams(), gap, c.nameTaken)
 	if err != nil {
 		return err
 	}
@@ -725,11 +726,11 @@ func (c *Camera) openSegment(u sample, gap bool) error {
 	c.mu.Lock()
 	c.st.file = seg.name()
 	c.st.fileBytes = seg.bytes
-	c.st.width, c.st.height = c.proc.width, c.proc.height
+	c.st.width, c.st.height = c.proc.Size()
 	c.mu.Unlock()
 	c.w.send(&ipc.SegmentOpened{
 		CameraID: c.id, Path: seg.partPath, Start: ipc.T(seg.start), Gap: gap,
-		VideoCodec: seg.vp.codec, AudioCodec: seg.audioName(),
+		VideoCodec: seg.vp.Codec, AudioCodec: seg.audioName(),
 	})
 	return nil
 }
@@ -813,7 +814,7 @@ func (c *Camera) tick() (outcome, string, bool) {
 	if d := c.reader.Dropped(); d != c.lastDropped {
 		lost := d - c.lastDropped
 		c.lastDropped = d
-		c.proc.reset() // resynchronize at the next keyframe
+		c.proc.Reset() // resynchronize at the next keyframe
 		if wall.Sub(c.lastDropWarn) > time.Minute {
 			c.lastDropWarn = wall
 			c.emit(ipc.SevWarning, "packets_dropped",

@@ -739,6 +739,9 @@ type EventFilter struct {
 	CameraID string
 	Before   int64 // only events with a smaller id; 0 = newest
 	Limit    int
+	// Cameras, when not nil, limits the result to events about these cameras
+	// and events about no camera (a viewer limited to some cameras, spec 16.6).
+	Cameras *[]string
 }
 
 // ListEvents returns events newest first.
@@ -756,6 +759,16 @@ func (d *DB) ListEvents(f EventFilter) ([]Event, error) {
 	if f.CameraID != "" {
 		where = append(where, "camera_id = ?")
 		args = append(args, f.CameraID)
+	}
+	if f.Cameras != nil {
+		cond := "COALESCE(camera_id, '') = ''"
+		if len(*f.Cameras) > 0 {
+			cond += " OR camera_id IN (?" + strings.Repeat(",?", len(*f.Cameras)-1) + ")"
+			for _, id := range *f.Cameras {
+				args = append(args, id)
+			}
+		}
+		where = append(where, "("+cond+")")
 	}
 	if f.Before > 0 {
 		where = append(where, "id < ?")

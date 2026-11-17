@@ -98,7 +98,22 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, s.healthView())
+	writeJSON(w, http.StatusOK, s.healthViewFor(s.access(r)))
+}
+
+// healthViewFor leaves out the reasons about cameras the reader may not see.
+func (s *Server) healthViewFor(acc camAccess) healthView {
+	v := s.healthView()
+	if acc.limited {
+		keep := []Reason{}
+		for _, r := range v.Reasons {
+			if r.CameraID == "" || acc.allowed(r.CameraID) {
+				keep = append(keep, r)
+			}
+		}
+		v.Reasons = keep
+	}
+	return v
 }
 
 // ------------------------------------------------------------------- cameras
@@ -197,9 +212,12 @@ func toCameraView(c config.Camera, stats map[string]CameraStats) cameraView {
 func (s *Server) handleCamerasList(w http.ResponseWriter, r *http.Request) {
 	cfg := s.backend.Config()
 	stats := s.backend.CameraStats()
+	acc := s.access(r)
 	out := make([]cameraView, 0, len(cfg.Cameras))
 	for _, c := range cfg.Cameras {
-		out = append(out, toCameraView(c, stats))
+		if acc.allowed(c.ID) {
+			out = append(out, toCameraView(c, stats))
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"cameras": out})
 }
@@ -218,6 +236,8 @@ type cameraInput struct {
 	Transport      string   `json:"transport"`
 	RecordAudio    *bool    `json:"recordAudio"`
 	DestinationIDs []string `json:"destinationIds"`
+	// SubStreamPath: absent keeps the saved value, "" removes the sub stream.
+	SubStreamPath *string `json:"subStreamPath"`
 }
 
 // apply copies the input onto a camera. prev is the saved camera when
@@ -257,6 +277,16 @@ func (in cameraInput) apply(prev *config.Camera) (config.Camera, error) {
 	}
 	if in.DestinationIDs != nil {
 		cam.DestinationIDs = in.DestinationIDs
+	}
+	if in.SubStreamPath != nil {
+		if sp := strings.TrimSpace(*in.SubStreamPath); sp == "" {
+			cam.SubStreamPath = nil
+		} else {
+			if parts, err := config.ParseRTSPURL(sp); err == nil && strings.HasPrefix(strings.ToLower(sp), "rtsp://") {
+				sp = parts.Path // a pasted full URL: only its path is used
+			}
+			cam.SubStreamPath = &sp
+		}
 	}
 	switch {
 	case in.ClearPassword:
@@ -376,6 +406,15 @@ func (s *Server) handleCameraDelete(w http.ResponseWriter, r *http.Request) {
 			if c.Cameras[i].ID == id {
 				name = c.Cameras[i].Name
 				c.Cameras = append(c.Cameras[:i], c.Cameras[i+1:]...)
+				for v := range c.Live.Views {
+					ids := c.Live.Views[v].CameraIDs[:0]
+					for _, cid := range c.Live.Views[v].CameraIDs {
+						if cid != id {
+							ids = append(ids, cid)
+						}
+					}
+					c.Live.Views[v].CameraIDs = ids
+				}
 				return nil
 			}
 		}
@@ -437,7 +476,23 @@ func (s *Server) handleCameraTest(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), HandlerTimeout-3*time.Second)
 	defer cancel()
-	writeJSON(w, http.StatusOK, worker.Probe(ctx, cam, password))
+	// The sub stream is tested beside the main stream so the whole test
+	// still fits in the handler's time limit.
+	subCh := make(chan *worker.SubProbeResult, 1)
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				subCh <- &worker.SubProbeResult{Error: fmt.Sprint(rec), Warnings: []string{}}
+			}
+		}()
+		subCh <- worker.ProbeSub(ctx, cam, password)
+	}()
+	res := worker.Probe(ctx, cam, password)
+	res.Sub = <-subCh
+	if res.Sub == nil && res.OK {
+		res.Warnings = append(res.Warnings, worker.NoSubWarning)
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 type importResult struct {
@@ -837,15 +892,18 @@ func (s *Server) handleRecordingCameras(w http.ResponseWriter, r *http.Request) 
 		Name    string `json:"name"`
 		Deleted bool   `json:"deleted"`
 	}
+	acc := s.access(r)
 	out := []item{}
 	seen := map[string]bool{}
 	for _, c := range cfg.Cameras {
-		out = append(out, item{ID: c.ID, Name: c.Name})
 		seen[c.ID] = true
+		if acc.allowed(c.ID) {
+			out = append(out, item{ID: c.ID, Name: c.Name})
+		}
 	}
 	if rows, err := s.backend.Index().Cameras(); err == nil {
 		for _, row := range rows {
-			if !seen[row.ID] {
+			if !seen[row.ID] && acc.allowed(row.ID) {
 				out = append(out, item{ID: row.ID, Name: row.Name, Deleted: true})
 			}
 		}
@@ -905,6 +963,10 @@ func (s *Server) handleSegments(w http.ResponseWriter, r *http.Request) {
 		s.writeFail(w, FieldErr("camera", "Choose a camera."))
 		return
 	}
+	if !s.access(r).allowed(cam) {
+		writeError(w, http.StatusNotFound, "not_found", "No such camera.")
+		return
+	}
 	if _, err := time.Parse("2006-01-02", date); err != nil {
 		s.writeFail(w, FieldErr("date", "Choose a date (YYYY-MM-DD)."))
 		return
@@ -926,6 +988,10 @@ func (s *Server) handleSegments(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "No such recording.")
+		return
+	}
+	if seg, err := s.backend.Index().Segment(id); err != nil || !s.access(r).allowed(seg.CameraID) {
 		writeError(w, http.StatusNotFound, "not_found", "No such recording.")
 		return
 	}
@@ -977,7 +1043,7 @@ func toEventView(e index.Event) eventView {
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	f := index.EventFilter{Severity: q.Get("severity"), CameraID: q.Get("camera")}
+	f := index.EventFilter{Severity: q.Get("severity"), CameraID: q.Get("camera"), Cameras: s.access(r).list()}
 	if f.Severity != "" && f.Severity != ipc.SevInfo && f.Severity != ipc.SevWarning && f.Severity != ipc.SevCritical {
 		s.writeFail(w, FieldErr("severity", "Severity must be info, warning or critical."))
 		return
@@ -1243,10 +1309,40 @@ type accountView struct {
 	Role      string    `json:"role"`
 	CreatedAt time.Time `json:"createdAt"`
 	Locked    bool      `json:"locked"`
+	Cameras   *[]string `json:"cameras"`
 }
 
 func (s *Server) accountView(u User) accountView {
-	return accountView{u.Username, u.Role, u.CreatedAt, s.users.Locked(u.Username)}
+	return accountView{u.Username, u.Role, u.CreatedAt, s.users.Locked(u.Username), u.Cameras}
+}
+
+// parseCameraLimit reads the optional "cameras" member of a user request:
+// absent = unchanged (present false), null = all cameras, a list = only
+// those. Every id must be a camera that exists.
+func (s *Server) parseCameraLimit(raw json.RawMessage) (limit *[]string, present bool, err error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	if string(raw) == "null" {
+		return nil, true, nil
+	}
+	var ids []string
+	if err := json.Unmarshal(raw, &ids); err != nil {
+		return nil, true, FieldErr("cameras", "Cameras must be a list of camera ids, or null for all cameras.")
+	}
+	cfg := s.backend.Config()
+	clean := []string{}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if _, ok := cfg.Camera(id); !ok {
+			return nil, true, FieldErr("cameras", fmt.Sprintf("Camera %q does not exist.", id))
+		}
+		if !seen[id] {
+			seen[id] = true
+			clean = append(clean, id)
+		}
+	}
+	return &clean, true, nil
 }
 
 func (s *Server) handleUsersList(w http.ResponseWriter, r *http.Request) {
@@ -1260,11 +1356,17 @@ func (s *Server) handleUsersList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Role     string `json:"role"`
+		Username string          `json:"username"`
+		Password string          `json:"password"`
+		Role     string          `json:"role"`
+		Cameras  json.RawMessage `json:"cameras"`
 	}
 	if err := readJSON(r, &in); err != nil {
+		s.writeFail(w, err)
+		return
+	}
+	limit, present, err := s.parseCameraLimit(in.Cameras)
+	if err != nil {
 		s.writeFail(w, err)
 		return
 	}
@@ -1273,6 +1375,13 @@ func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 		s.writeFail(w, err)
 		return
 	}
+	if present && limit != nil {
+		if err := s.users.SetCameras(u.Username, limit); err != nil {
+			s.writeFail(w, err)
+			return
+		}
+		u.Cameras = limit
+	}
 	s.audit(r, "user_added", "User "+u.Username+" ("+u.Role+") was added.", "")
 	writeJSON(w, http.StatusCreated, s.accountView(u))
 }
@@ -1280,10 +1389,16 @@ func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUserUpdate(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("username")
 	var in struct {
-		Password string `json:"password"`
-		Role     string `json:"role"`
+		Password string          `json:"password"`
+		Role     string          `json:"role"`
+		Cameras  json.RawMessage `json:"cameras"`
 	}
 	if err := readJSON(r, &in); err != nil {
+		s.writeFail(w, err)
+		return
+	}
+	limit, present, err := s.parseCameraLimit(in.Cameras)
+	if err != nil {
 		s.writeFail(w, err)
 		return
 	}
@@ -1291,6 +1406,13 @@ func (s *Server) handleUserUpdate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeFail(w, err)
 		return
+	}
+	if present {
+		if err := s.users.SetCameras(u.Username, limit); err != nil {
+			s.writeFail(w, err)
+			return
+		}
+		u.Cameras = limit
 	}
 	me, _ := sessionOf(r)
 	if in.Password != "" {

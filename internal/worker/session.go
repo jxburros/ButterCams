@@ -19,6 +19,7 @@ import (
 
 	"github.com/jxburros/buttercams/internal/audio"
 	"github.com/jxburros/buttercams/internal/config"
+	"github.com/jxburros/buttercams/internal/stream"
 	"github.com/jxburros/buttercams/internal/version"
 )
 
@@ -334,4 +335,13 @@ func (s *session) connect(c *gortsplib.Client, u *base.URL, opt dialOptions) err
 		return err
 	}
 	return nil
+}
+
+// newProcessor prepares the sample processor for a session.
+func newProcessor(s *session) (*stream.Processor, error) {
+	var af format.Format
+	if s.audio != nil {
+		af = s.audio.format
+	}
+	return stream.NewProcessor(s.videoFormat, af)
 }

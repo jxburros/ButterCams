@@ -12,7 +12,7 @@ import (
 )
 
 // SchemaVersion is the config schema this build reads and writes.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // CamerasPerWorker is the number of cameras one recorder worker handles.
 const CamerasPerWorker = 6
@@ -33,6 +33,7 @@ type Config struct {
 	Server        Server        `json:"server"`
 	Staging       Staging       `json:"staging"`
 	Logging       Logging       `json:"logging"`
+	Live          Live          `json:"live"`
 	Destinations  []Destination `json:"destinations"`
 	Cameras       []Camera      `json:"cameras"`
 }
@@ -56,6 +57,35 @@ type Staging struct {
 type Logging struct {
 	RetentionDays int `json:"retentionDays"`
 }
+
+// Live configures live view and timeline playback (spec 16.8).
+type Live struct {
+	// Enabled runs the media process; false hides live view and playback.
+	Enabled bool `json:"enabled"`
+	// MainStream lets the workers restream main streams to the media process.
+	// False keeps the restream off: the grid and single view use sub streams.
+	MainStream bool `json:"mainStream"`
+	// Views are the shared views every user sees; only Admins edit them.
+	Views []View `json:"views"`
+}
+
+// View is a saved arrangement of cameras on the Live page.
+type View struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Layout    int      `json:"layout"`
+	CameraIDs []string `json:"cameraIds"`
+}
+
+// View limits.
+const (
+	MaxViews          = 50
+	MaxViewCameras    = 64
+	MaxViewNameLength = 60
+)
+
+// Layouts lists the tile layouts of the Live page.
+var Layouts = []int{1, 4, 9, 16}
 
 // Destination types.
 const (
@@ -90,8 +120,12 @@ type Camera struct {
 	RecordAudio    bool     `json:"recordAudio"`
 	DestinationIDs []string `json:"destinationIds"`
 
-	// Reserved for later versions: saved and loaded, never used in v1.
-	SubStreamPath *string                    `json:"subStreamPath"`
+	// SubStreamPath is the path of the camera's low-resolution stream on the
+	// same host, port and credentials. It is used for live view only and
+	// never recorded (spec 16.3).
+	SubStreamPath *string `json:"subStreamPath"`
+
+	// Reserved for later versions: saved and loaded, never used yet.
 	RecordingMode string                     `json:"recordingMode"`
 	Extensions    map[string]json.RawMessage `json:"extensions"`
 }
@@ -112,6 +146,7 @@ func Default(stagingPath string) *Config {
 			MinFreeGB:      DefaultMinFreeGB,
 		},
 		Logging:      Logging{RetentionDays: DefaultLogRetentionDays},
+		Live:         Live{Enabled: true, MainStream: true, Views: []View{}},
 		Destinations: []Destination{},
 		Cameras:      []Camera{},
 	}
@@ -134,6 +169,16 @@ func (c *Config) Normalize() {
 	}
 	if c.Logging.RetentionDays == 0 {
 		c.Logging.RetentionDays = DefaultLogRetentionDays
+	}
+	if c.Live.Views == nil {
+		c.Live.Views = []View{}
+	}
+	for i := range c.Live.Views {
+		v := &c.Live.Views[i]
+		v.Name = strings.TrimSpace(v.Name)
+		if v.CameraIDs == nil {
+			v.CameraIDs = []string{}
+		}
 	}
 	if c.Destinations == nil {
 		c.Destinations = []Destination{}
@@ -218,8 +263,21 @@ func (c *Config) Destination(id string) (Destination, bool) {
 }
 
 // URL returns the camera's RTSP URL without credentials.
-func (c Camera) URL() string {
-	p := c.Path
+func (c Camera) URL() string { return c.urlFor(c.Path) }
+
+// SubURL returns the RTSP URL of the camera's sub stream, or "" when it has
+// none.
+func (c Camera) SubURL() string {
+	if c.SubStreamPath == nil || strings.TrimSpace(*c.SubStreamPath) == "" {
+		return ""
+	}
+	return c.urlFor(strings.TrimSpace(*c.SubStreamPath))
+}
+
+// HasSub reports whether a sub stream is configured.
+func (c Camera) HasSub() bool { return c.SubURL() != "" }
+
+func (c Camera) urlFor(p string) string {
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p
 	}
