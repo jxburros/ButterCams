@@ -180,10 +180,14 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	if !sc.All() {
 		hv.Health = restrictHealth(hv.Health, sc)
 	}
+	dests := s.destinationsPayload()
+	if !sc.All() {
+		dests = restrictDestinations(dests)
+	}
 	ch := s.hub.subscribe(sess.username)
 	defer s.hub.unsubscribe(ch)
 	for _, f := range [][]byte{frame("health", hv), frame("cameras", s.camerasLive(sc)),
-		frame("destinations", s.destinationsPayload())} {
+		frame("destinations", dests)} {
 		if _, err := w.Write(f); err != nil {
 			return
 		}

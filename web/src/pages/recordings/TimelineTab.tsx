@@ -74,6 +74,7 @@ function PlayerTile({
   showName,
   onPlayer,
   onState,
+  onWantSpans,
 }: {
   cameraId: string;
   name: string;
@@ -83,6 +84,7 @@ function PlayerTile({
   showName: boolean;
   onPlayer: (cameraId: string, player: TimelinePlayer | null) => void;
   onState: (cameraId: string, state: PlayerState) => void;
+  onWantSpans: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerRef = useRef<TimelinePlayer | null>(null);
@@ -92,7 +94,7 @@ function PlayerTile({
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    const player = new TimelinePlayer(video, { fps, onState: (s) => onState(cameraId, s) });
+    const player = new TimelinePlayer(video, { fps, onState: (s) => onState(cameraId, s), onWantSpans });
     player.setSpans(spansRef.current);
     playerRef.current = player;
     onPlayer(cameraId, player);
@@ -102,7 +104,7 @@ function PlayerTile({
       player.destroy();
     };
     // The frame rate is only a fallback for frame steps; a new value does not justify a new player.
-  }, [cameraId, onPlayer, onState]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [cameraId, onPlayer, onState, onWantSpans]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     playerRef.current?.setSpans(spans);
@@ -173,6 +175,17 @@ export function TimelineTab() {
   const isToday = day !== null && now >= day.startMs && now < day.endMs + AFTER_DAY_MS;
 
   // ------------------------------------------------------------- loading
+  /** Set while the date changes because playback crossed midnight. */
+  const autoDayRef = useRef(false);
+  /** Loads the timeline again now (a player reached the newest file it knows). */
+  const reloadRef = useRef<(() => void) | null>(null);
+  const wantedAt = useRef(0);
+  const onWantSpans = useCallback(() => {
+    const now = Date.now();
+    if (now - wantedAt.current < 2000) return; // one request for all players
+    wantedAt.current = now;
+    reloadRef.current?.();
+  }, []);
   useEffect(() => {
     if (!day || selected.length === 0) {
       setData({});
@@ -200,12 +213,16 @@ export function TimelineTab() {
           if (current) setFailure(errorMessage(err));
         });
     };
-    setData({});
+    // When playback itself carried the page into the next day, the players
+    // keep what they have until the new day's list arrives.
+    if (!autoDayRef.current) setData({});
     load();
+    reloadRef.current = load;
     // The day that is still being recorded changes: new files, closed files.
     const timer = isToday ? window.setInterval(load, REFRESH_MS) : null;
     return () => {
       current = false;
+      if (reloadRef.current === load) reloadRef.current = null;
       if (timer !== null) window.clearInterval(timer);
     };
   }, [selectedKey, day?.startMs, day?.endMs, isToday]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -242,14 +259,24 @@ export function TimelineTab() {
 
   const masterId = selected[0];
   const master = masterId ? states[masterId] : undefined;
-  const playheadMs = master?.wallMs ?? null;
-  // The first camera drives the clock: when it has stopped, nothing is playing.
-  const stopped = master?.status === 'ended' || master?.status === 'error' || master?.status === 'unsupported' || master?.status === 'norecording';
+  const isStopped = (s: PlayerState | undefined) =>
+    s?.status === 'ended' || s?.status === 'error' || s?.status === 'unsupported' || s?.status === 'norecording';
+  // The clock follows the first camera that has video (as the sync group
+  // does): when the first one stops, the others carry on.
+  const driver = selected.map((id) => states[id]).find((s) => s !== undefined && !isStopped(s) && s.wallMs !== null) ?? master;
+  const playheadMs = driver?.wallMs ?? null;
+  // Nothing is playing once every camera has stopped.
+  const stopped = selected.length > 0 && selected.every((id) => isStopped(states[id]));
   const playing = wantPlaying && !stopped;
   const loaded = Object.keys(data).length > 0;
 
   // A new day or camera set: stop, nothing is at the playhead any more.
   useEffect(() => {
+    if (autoDayRef.current) {
+      // Playback carried the page into the next day: it goes on playing.
+      autoDayRef.current = false;
+      return;
+    }
     group.pause();
     setPlaying(false);
     setSelection(null);
@@ -257,7 +284,10 @@ export function TimelineTab() {
 
   // Playback that runs past midnight takes the page to the next day.
   useEffect(() => {
-    if (playing && day && playheadMs !== null && playheadMs >= day.endMs) setDate(dateOf(playheadMs));
+    if (playing && day && playheadMs !== null && playheadMs >= day.endMs) {
+      autoDayRef.current = true;
+      setDate(dateOf(playheadMs));
+    }
   }, [playing, playheadMs, day]);
 
 
@@ -278,7 +308,7 @@ export function TimelineTab() {
       setPlaying(false);
       return;
     }
-    if (playheadMs === null || master?.status === 'ended' || master?.status === 'norecording') {
+    if (playheadMs === null || stopped) {
       // Nothing chosen yet: start at the first recording of the day.
       const first = masterId ? data[masterId]?.spans[0] : undefined;
       if (first && day) seek(Math.max(first.startMs, day.startMs), true);
@@ -351,9 +381,14 @@ export function TimelineTab() {
       const known = thumbs.current?.cached(target.span.id, target.offsetMs) ?? null;
       setHoverPicture(known);
       if (known === null) {
-        thumbs.current?.request(target.span.id, target.offsetMs, (picture) => {
-          if (token === hoverToken.current) setHoverPicture(picture);
-        });
+        thumbs.current?.request(
+          target.span.id,
+          target.offsetMs,
+          (picture) => {
+            if (token === hoverToken.current) setHoverPicture(picture);
+          },
+          target.span.open,
+        );
       }
     },
     [data, masterId],
@@ -487,6 +522,7 @@ export function TimelineTab() {
                 showName={selected.length > 1}
                 onPlayer={onPlayer}
                 onState={onState}
+                onWantSpans={onWantSpans}
               />
             ))}
           </div>

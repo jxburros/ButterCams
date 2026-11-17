@@ -41,6 +41,9 @@ function isQuotaError(err: unknown): boolean {
   return err instanceof DOMException && err.name === 'QuotaExceededError';
 }
 
+/** A connection that played this long counts as working: the backoff starts again from 1 s. */
+const STABLE_PLAY_MS = 10_000;
+
 export class LivePlayer {
   private readonly video: HTMLVideoElement;
   private readonly options: LivePlayerOptions;
@@ -56,7 +59,8 @@ export class LivePlayer {
   private queueBytes = 0;
   private streaming = true; // ManagedMediaSource: false between endstreaming and startstreaming
   private attempt = 0;
-  private gotData = false;
+  /** When the current connection started playing; 0 while it has not. */
+  private playingSince = 0;
   private retryTimer: number | null = null;
   private tickTimer: number | null = null;
   private lastTime = -1;
@@ -104,6 +108,7 @@ export class LivePlayer {
       return;
     }
     this.status = status;
+    if (status.kind === 'playing') this.playingSince = Date.now();
     this.options.onStatus(status);
   }
 
@@ -112,7 +117,6 @@ export class LivePlayer {
   private connect(): void {
     if (!this.running) return;
     this.closeSocket();
-    this.gotData = false;
     if (this.status.kind !== 'unavailable' && this.status.kind !== 'waiting') this.setStatus({ kind: 'connecting' });
     let socket: WebSocket;
     try {
@@ -160,7 +164,11 @@ export class LivePlayer {
   /** Schedules the next connection attempt (1, 2, 5, 10 s). */
   private retry(refused: boolean): void {
     if (!this.running || this.retryTimer !== null) return;
-    if (this.gotData) this.attempt = 0;
+    // Only a connection that really played for a while resets the backoff;
+    // one that delivers data that cannot be played must not reconnect every
+    // second for ever.
+    if (this.playingSince !== 0 && Date.now() - this.playingSince >= STABLE_PLAY_MS) this.attempt = 0;
+    this.playingSince = 0;
     const delay = backoffDelay(this.attempt);
     this.attempt += 1;
     if (refused) void this.explainRefusal();
@@ -221,7 +229,6 @@ export class LivePlayer {
 
   private onBinary(data: ArrayBuffer): void {
     if (this.attached === null) return; // nothing can be appended before an init message
-    this.gotData = true;
     this.queue.push(data);
     this.queueBytes += data.byteLength;
     if (this.queueBytes > MAX_QUEUE_BYTES || this.queue.length > MAX_QUEUE_ITEMS) {
@@ -257,7 +264,7 @@ export class LivePlayer {
     }
     this.video.muted = this.video.muted || !this.options.audio;
     void attached.opened.then(() => {
-      if (generation !== this.generation) return;
+      if (generation !== this.generation || attached.mediaSource.readyState !== 'open') return;
       try {
         const buffer = attached.mediaSource.addSourceBuffer(mime);
         buffer.mode = 'segments';

@@ -699,6 +699,63 @@ configuration file changes its schema, so the release version moves from
 - The mouse wheel zooms the timeline; Shift+wheel pans it.
 - Thumbnails come from the first camera, one picture per 2 s of recording.
 
+### 59. Messages to the guardian never wait
+
+Spec rule 1 forbids anything blocking the recording path, and a worker's
+messages (`segment_opened`, `segment_closed`, events) are sent from the
+camera goroutines. A guardian that is slow to read (a long database
+transaction, an index rebuild) would fill the pipe and block them. So:
+
+- The worker sends through an outbox: messages that must all arrive keep
+  their order in a queue; statistics and heartbeats are coalesced (only the
+  newest is kept), so the queue cannot grow without bound. One goroutine
+  writes the pipe; the worker flushes it for up to 3 s before it exits.
+- The guardian reads each child's output on one goroutine, which only notes
+  that the child is alive, and handles the messages on another, in order.
+  While the reader waits for the handler, the heartbeat check does not blame
+  the child: the delay is the guardian's own.
+
+### 60. Deleting a camera with its recordings, then adding it again
+
+A camera deleted with "keep recordings" off is purged; files it closes late
+are purged too. A camera added again under the same id must keep what it
+records, so a purge covers only files that **started before** the deletion.
+
+### 61. Destinations may not share folders
+
+Two destinations in the same folder, one inside another, or one in or
+around the staging folder would count one file as two copies, and retention
+on one would delete the only copy the index still lists elsewhere. The
+configuration is rejected. Paths are compared after removing trailing
+separators, with `/` and `\` alike, and without case on Windows and for
+shares.
+
+### 62. Oversized RTP packets in the restream
+
+The RTSP server library sends packets of at most 1472 bytes, while cameras
+streaming over TCP may send larger ones (the recorder takes them as they
+are). At the first oversized video packet of a mount, the restream starts
+repacking that mount's video: access units are reassembled and packed again
+with the server's packet size, keeping the timestamps. Oversized audio
+packets, which are rare, are skipped. The camera's packets are never
+changed; this runs in the restream's pump goroutine, not the camera's.
+
+### 63. Live viewers and access that changes
+
+A WebSocket is checked once, at the handshake. An open live stream checks
+every 3 s that its session still exists and may still see the camera, and
+closes otherwise, like the event stream does with its session. Copy errors
+of destinations name files, and so cameras: a Viewer limited to some
+cameras gets a generic text instead.
+
+### 64. Joining a stream with a large group of pictures
+
+A viewer that joins gets the pictures since the last keyframe at once. Those
+are slices the source keeps anyway, so they may exceed the viewer's queue
+limit (4 MB) once, up to the size kept; the normal limit applies from its
+first write. Without this, a 4K stream with long keyframe intervals showed
+a new viewer nothing until its next keyframe.
+
 ## Not verified here
 
 The build environment was Linux without a Windows machine. These parts are

@@ -276,26 +276,36 @@ func (s *UserStore) ScopeOf(username string) Scope {
 
 // SetCameras limits a user to a list of cameras; nil removes the limit.
 func (s *UserStore) SetCameras(username string, cameras *[]string) (User, error) {
-	if cameras != nil {
-		seen := map[string]bool{}
-		clean := make([]string, 0, len(*cameras))
-		for _, id := range *cameras {
-			id = strings.TrimSpace(id)
-			if id == "" || seen[id] {
-				continue
-			}
-			if len(id) > 64 {
-				return User{}, FieldErr("cameras", "A camera id is too long.")
-			}
-			seen[id] = true
-			clean = append(clean, id)
-		}
-		if len(clean) > 1000 {
-			return User{}, FieldErr("cameras", "Too many cameras.")
-		}
-		cameras = &clean
+	cameras, err := CleanCameraLimit(cameras)
+	if err != nil {
+		return User{}, err
 	}
 	return s.change(username, func(u *User) { u.Cameras = cameras })
+}
+
+// CleanCameraLimit checks and tidies a camera limit (nil = every camera):
+// blanks and duplicates go, and ids and the list are bounded.
+func CleanCameraLimit(cameras *[]string) (*[]string, error) {
+	if cameras == nil {
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	clean := make([]string, 0, len(*cameras))
+	for _, id := range *cameras {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		if len(id) > 64 {
+			return nil, FieldErr("cameras", "A camera id is too long.")
+		}
+		seen[id] = true
+		clean = append(clean, id)
+	}
+	if len(clean) > 1000 {
+		return nil, FieldErr("cameras", "Too many cameras.")
+	}
+	return &clean, nil
 }
 
 // SetViews replaces a user's own saved views.
@@ -564,6 +574,17 @@ func (s *sessions) get(token string) (session, bool) {
 		return session{}, false
 	}
 	sess.lastSeen = now
+	return *sess, true
+}
+
+// peek returns a copy of a live session without counting it as use.
+func (s *sessions) peek(token string) (session, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess := s.m[token]
+	if sess == nil || s.now().Sub(sess.lastSeen) > SessionIdleTimeout {
+		return session{}, false
+	}
 	return *sess, true
 }
 

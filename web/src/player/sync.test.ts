@@ -42,8 +42,12 @@ class FakePlayer implements SyncPlayer {
   rate = 1;
   from = 0;
   to = Infinity;
+  failed = false;
   log: string[] = [];
 
+  hasFailed() {
+    return this.failed;
+  }
   wallTime() {
     return this.wall;
   }
@@ -181,5 +185,32 @@ describe('sync group', () => {
     g.seek(1, false);
     expect(players.filter((p) => p.log.length > 0)).toHaveLength(4);
     g.stop();
+  });
+
+  it('keeps the clock moving when the first camera stops', () => {
+    const { g, players, stop } = group(2);
+    const [master, b] = players as [FakePlayer, FakePlayer];
+    g.seek(10_000, true);
+    master.loaded = false; // its recordings ended
+    b.wall = 12_000;
+    expect(g.wallTime()).toBe(12_000);
+    g.tick();
+    expect(b.log.filter((l) => l.startsWith('seek'))).toEqual(['seek 10000']); // never pulled back
+    stop();
+  });
+
+  it('retries a camera that failed only now and then', () => {
+    const { g, players, advance, stop } = group(2);
+    const [, b] = players as [FakePlayer, FakePlayer];
+    g.seek(10_000, true);
+    b.failed = true;
+    b.loaded = false;
+    b.log = [];
+    for (let i = 0; i < 20; i++) {
+      advance(250);
+      g.tick();
+    }
+    expect(b.log.filter((l) => l.startsWith('seek')).length).toBeLessThanOrEqual(1);
+    stop();
   });
 });

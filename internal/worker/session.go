@@ -212,6 +212,12 @@ func dialSession(ctx context.Context, opt dialOptions) (*session, error) {
 	}
 	s.client = c
 
+	// Start only prepares the client (no network I/O). It runs before any
+	// path below can call Close: Close on a client that is not started yet
+	// panics or blocks forever.
+	if err := c.Start(); err != nil {
+		return nil, classifyDialError(err)
+	}
 	type result struct{ err error }
 	resCh := make(chan result, 1)
 	go func() {
@@ -244,9 +250,7 @@ func dialSession(ctx context.Context, opt dialOptions) (*session, error) {
 }
 
 func (s *session) connect(c *gortsplib.Client, u *base.URL, opt dialOptions) error {
-	if err := c.Start(); err != nil {
-		return err
-	}
+	// The client was started by the caller.
 	desc, _, err := c.Describe(u)
 	if err != nil {
 		return err

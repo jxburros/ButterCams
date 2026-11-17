@@ -50,8 +50,12 @@ type viewer struct {
 	q      []item
 	bytes  int
 	closed bool
-	notify chan struct{}
-	done   chan struct{}
+	// joinAllowance lets the pictures replayed to a viewer that just joined
+	// exceed the queue limit once: they are slices the source keeps anyway,
+	// so this holds no extra memory. It ends at the viewer's first write.
+	joinAllowance int
+	notify        chan struct{}
+	done          chan struct{}
 }
 
 func newViewer(audio bool) *viewer {
@@ -66,7 +70,7 @@ func (v *viewer) push(text bool, data []byte, now time.Time) bool {
 		v.mu.Unlock()
 		return true
 	}
-	if v.bytes+len(data) > viewerQueueBytes || (len(v.q) > 0 && now.Sub(v.q[0].at) > viewerQueueAge) {
+	if v.bytes+len(data) > viewerQueueBytes+v.joinAllowance || (len(v.q) > 0 && now.Sub(v.q[0].at) > viewerQueueAge) {
 		v.q, v.bytes = nil, 0
 		v.mu.Unlock()
 		return false
@@ -81,12 +85,20 @@ func (v *viewer) push(text bool, data []byte, now time.Time) bool {
 	return true
 }
 
+// allowJoin lets the next n bytes of replayed pictures through (see
+// joinAllowance).
+func (v *viewer) allowJoin(n int) {
+	v.mu.Lock()
+	v.joinAllowance = n
+	v.mu.Unlock()
+}
+
 // take removes and returns everything queued.
 func (v *viewer) take() []item {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	q := v.q
-	v.q, v.bytes = nil, 0
+	v.q, v.bytes, v.joinAllowance = nil, 0, 0
 	return q
 }
 

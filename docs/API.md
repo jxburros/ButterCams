@@ -170,7 +170,10 @@ The CSV destinations column is a `;`-separated list of destination ids.
 }
 ```
 
-`freeBytes`/`totalBytes` are `null` until first measured.
+`freeBytes`/`totalBytes` are `null` until first measured. For a Viewer
+limited to some cameras, `lastError` is a generic text (the real one names
+recording files, and so cameras); the same applies to the `destinations`
+event of `/stream`.
 
 | Method | Path | Notes |
 | --- | --- | --- |

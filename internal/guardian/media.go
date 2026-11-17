@@ -154,6 +154,10 @@ func (g *Guardian) onMediaMessage(msg any) {
 
 func (g *Guardian) onMediaRestart(reason string, loop bool) {
 	g.mu.Lock()
+	// The token belongs to the run that ended. Without one nothing is sent
+	// to the next run until its own start handler has made a new token and
+	// reset the port, so a late assign cannot leave the port unknown.
+	g.media.token = ""
 	g.media.port = 0
 	g.media.stats = ipc.MediaStats{}
 	if g.media.downSince.IsZero() {

@@ -88,7 +88,10 @@ func (s *Server) restrictStream(username, event string, v any) (any, bool) {
 	case "cameras":
 		return s.camerasLive(sc), true
 	case "destinations":
-		return v, true
+		if p, ok := v.(map[string]any); ok {
+			return restrictDestinations(p), true
+		}
+		return nil, false
 	}
 	return nil, false // an event kind added later is not shown until it has a rule
 }

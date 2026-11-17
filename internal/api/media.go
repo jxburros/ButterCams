@@ -53,6 +53,10 @@ type mediaGate struct {
 	transport *http.Transport
 }
 
+// MediaResponseTimeout bounds the wait for the media process to start
+// answering a proxied request.
+const MediaResponseTimeout = 15 * time.Second
+
 func newMediaGate() *mediaGate {
 	dialer := &net.Dialer{Timeout: MediaDialTimeout}
 	return &mediaGate{
@@ -64,6 +68,12 @@ func newMediaGate() *mediaGate {
 			MaxIdleConnsPerHost: 64,
 			IdleConnTimeout:     30 * time.Second,
 			DisableCompression:  true, // video does not compress, and nothing may be buffered
+			// The dial timeout alone does not catch a media process that
+			// is stuck: the system accepts the connection for it. A request
+			// that gets no answer in time is answered 503 and frees its
+			// slot. The limit leaves room for the media process to try
+			// several copies of a recording on network shares.
+			ResponseHeaderTimeout: MediaResponseTimeout,
 		},
 	}
 }
@@ -185,7 +195,46 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.media.dropStream(key)
-	s.proxyMedia(w, r, "/live/"+cam+"/"+stream, nil)
+	// The handshake is the only request of a WebSocket, so access is
+	// checked again while it is open: signing out, a deleted account, an
+	// expired session or a camera taken away from the user ends the stream
+	// within seconds (spec 16.6). The proxy closes both sides when the
+	// request's context ends.
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	go func() {
+		t := time.NewTicker(liveRecheck)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if !s.mayWatch(sess.token, cam) {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	s.proxyMedia(w, r.WithContext(ctx), "/live/"+cam+"/"+stream, nil)
+}
+
+// liveRecheck is how often an open live stream checks that its viewer may
+// still watch.
+const liveRecheck = 3 * time.Second
+
+// mayWatch reports whether a session still exists and may see a camera.
+func (s *Server) mayWatch(token, cameraID string) bool {
+	sess, ok := s.sessions.peek(token)
+	if !ok {
+		return false
+	}
+	if sess.role != RoleAdmin && !s.users.ScopeOf(sess.username).Allows(cameraID) {
+		return false
+	}
+	_, exists := s.backend.Config().Camera(cameraID)
+	return exists
 }
 
 // handlePlay is GET /segments/{id}/play/{index|data|keyframes|thumb}. The

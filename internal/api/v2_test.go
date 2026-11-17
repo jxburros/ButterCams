@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -650,5 +652,52 @@ func TestLiveStreamLimitsAndWebSocket(t *testing.T) {
 	// Without a session: 401.
 	if _, res, err := websocket.DefaultDialer.Dial(wsURL, http.Header{"Origin": {a.ts.URL}}); err == nil || res == nil || res.StatusCode != 401 {
 		t.Fatalf("a WebSocket without a session: %v %v", err, res)
+	}
+}
+
+// An open live stream ends when the viewer may no longer watch: a camera
+// taken away, or the session ended (spec 16.6).
+func TestOpenLiveStreamEndsWhenAccessIsRevoked(t *testing.T) {
+	a := newTestAPI(t)
+	twoCameras(t, a)
+	startFakeMedia(t, a)
+	a.login("viewer", "battery staple")
+	dial := func() *websocket.Conn {
+		t.Helper()
+		u, _ := url.Parse(a.ts.URL)
+		hdr := http.Header{"Origin": {a.ts.URL}}
+		for _, c := range a.c.Jar.Cookies(u) {
+			hdr.Add("Cookie", c.String())
+		}
+		c, res, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(a.ts.URL, "http")+"/api/v1/live/vault/main", hdr)
+		if err != nil {
+			t.Fatalf("dial: %v (%v)", err, res)
+		}
+		c.ReadMessage()
+		c.ReadMessage()
+		return c
+	}
+	closedWithin := func(c *websocket.Conn, d time.Duration) bool {
+		c.SetReadDeadline(time.Now().Add(d))
+		_, _, err := c.ReadMessage()
+		var ne net.Error
+		return err != nil && !(errors.As(err, &ne) && ne.Timeout())
+	}
+
+	c := dial()
+	if _, err := a.s.users.SetCameras("viewer", &[]string{"front-door"}); err != nil {
+		t.Fatal(err)
+	}
+	if !closedWithin(c, liveRecheck+3*time.Second) {
+		t.Fatal("the stream of a camera taken away stayed open")
+	}
+
+	if _, err := a.s.users.SetCameras("viewer", nil); err != nil {
+		t.Fatal(err)
+	}
+	c = dial()
+	a.s.sessions.dropUser("viewer", "")
+	if !closedWithin(c, liveRecheck+3*time.Second) {
+		t.Fatal("the stream stayed open after the session ended")
 	}
 }

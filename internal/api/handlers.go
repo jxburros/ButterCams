@@ -610,7 +610,29 @@ func (s *Server) destinationsPayload() map[string]any {
 }
 
 func (s *Server) handleDestinationsList(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.destinationsPayload())
+	p := s.destinationsPayload()
+	if !s.scopeOf(r).All() {
+		p = restrictDestinations(p)
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// restrictDestinations removes what could name other cameras from the
+// storage state shown to a limited Viewer: copy errors quote file paths,
+// and those carry camera ids.
+func restrictDestinations(p map[string]any) map[string]any {
+	list, ok := p["destinations"].([]destinationView)
+	if !ok {
+		return p
+	}
+	out := make([]destinationView, len(list))
+	for i, d := range list {
+		if d.Status.LastError != "" {
+			d.Status.LastError = "Copies to this destination are failing."
+		}
+		out[i] = d
+	}
+	return map[string]any{"destinations": out, "staging": p["staging"]}
 }
 
 type destinationInput struct {
@@ -1321,7 +1343,13 @@ func camerasInput(raw json.RawMessage) (set bool, cameras *[]string, err error) 
 	if list == nil {
 		list = []string{}
 	}
-	return true, &list, nil
+	// Checked here, before anything is stored: a request is applied whole
+	// or not at all.
+	cameras, err = CleanCameraLimit(&list)
+	if err != nil {
+		return false, nil, err
+	}
+	return true, cameras, nil
 }
 
 func (s *Server) handleUsersList(w http.ResponseWriter, r *http.Request) {
@@ -1356,6 +1384,8 @@ func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if setCams && cams != nil {
 		if u, err = s.users.SetCameras(u.Username, cams); err != nil {
+			// Never leave an account with more access than was asked for.
+			s.users.Delete(strings.TrimSpace(in.Username))
 			s.writeFail(w, err)
 			return
 		}
@@ -1385,17 +1415,18 @@ func (s *Server) handleUserUpdate(w http.ResponseWriter, r *http.Request) {
 		s.writeFail(w, err)
 		return
 	}
+	// Whatever was stored applies to the user's open sessions at once.
+	me, _ := sessionOf(r)
+	if in.Password != "" {
+		s.sessions.dropUser(u.Username, me.token) // other sessions of that user must sign in again
+	}
+	s.sessions.setRole(u.Username, u.Role)
 	if setCams {
 		if u, err = s.users.SetCameras(u.Username, cams); err != nil {
 			s.writeFail(w, err)
 			return
 		}
 	}
-	me, _ := sessionOf(r)
-	if in.Password != "" {
-		s.sessions.dropUser(u.Username, me.token) // other sessions of that user must sign in again
-	}
-	s.sessions.setRole(u.Username, u.Role)
 	s.audit(r, "user_changed", "User "+u.Username+" was changed.", "")
 	writeJSON(w, http.StatusOK, s.accountView(u))
 }

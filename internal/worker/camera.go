@@ -235,6 +235,9 @@ func (c *Camera) clockJumped(wall time.Time) bool {
 // hourly schedule from the corrected time.
 func (c *Camera) onClockJump(wall time.Time) {
 	c.log.Warn("system clock changed; starting a new file at the next keyframe")
+	// The worker reports the change once for the whole process; this one
+	// belongs to the camera, so the timeline can show it (spec 16.5).
+	c.emit(ipc.SevInfo, "clock_jump", "The system clock changed; a new file is started with the corrected time.", nil)
 	c.jumpPending = c.seg != nil
 	c.dropNext()
 	c.roll = rollState{boundary: naming.NextBoundary(wall)}
