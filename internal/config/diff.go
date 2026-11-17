@@ -17,14 +17,13 @@ type Changes struct {
 	StagingFloorChanged bool
 	ServerChanged       bool
 	LoggingChanged      bool
-	LiveChanged         bool // the live section changed (never touches a recorder)
 }
 
 // Empty reports whether nothing changed.
 func (c Changes) Empty() bool {
 	return len(c.CamerasAdded) == 0 && len(c.CamerasRemoved) == 0 && len(c.CamerasChanged) == 0 &&
 		!c.DestinationsChanged && !c.StagingPathChanged && !c.StagingFloorChanged &&
-		!c.ServerChanged && !c.LoggingChanged && !c.LiveChanged
+		!c.ServerChanged && !c.LoggingChanged
 }
 
 func equalJSON(a, b any) bool {
@@ -64,6 +63,5 @@ func Diff(old, new *Config) Changes {
 		old.Staging.MinFreeGB != new.Staging.MinFreeGB
 	ch.ServerChanged = !reflect.DeepEqual(old.Server, new.Server)
 	ch.LoggingChanged = old.Logging != new.Logging
-	ch.LiveChanged = !equalJSON(old.Live, new.Live)
 	return ch
 }

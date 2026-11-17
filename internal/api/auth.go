@@ -106,11 +106,6 @@ type User struct {
 	Role         string    `json:"role"`
 	PasswordHash string    `json:"passwordHash"`
 	CreatedAt    time.Time `json:"createdAt"`
-	// Cameras limits a Viewer to these cameras; nil means all cameras
-	// (spec 16.6). Admins always see every camera.
-	Cameras *[]string `json:"cameras"`
-	// Views are the user's own saved Live views.
-	Views []config.View `json:"views,omitempty"`
 }
 
 type usersDoc struct {
@@ -209,7 +204,6 @@ func (s *UserStore) List() []User {
 	out := make([]User, len(s.users))
 	for i, u := range s.users {
 		u.PasswordHash = ""
-		u.Views = nil
 		out[i] = u
 	}
 	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Username) < strings.ToLower(out[j].Username) })
@@ -313,72 +307,6 @@ func (s *UserStore) Delete(username string) error {
 	s.users = append(s.users[:i], s.users[i+1:]...)
 	if err := s.saveLocked(); err != nil {
 		s.users = prev
-		return err
-	}
-	return nil
-}
-
-// CameraLimit returns the cameras a user may see. limited is false for an
-// administrator, an unknown user (no session can exist for one) is limited to
-// nothing.
-func (s *UserStore) CameraLimit(username string) (ids []string, limited bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	i := s.findLocked(username)
-	if i < 0 {
-		return nil, true
-	}
-	u := s.users[i]
-	if u.Role == RoleAdmin || u.Cameras == nil {
-		return nil, false
-	}
-	return append([]string{}, (*u.Cameras)...), true
-}
-
-// SetCameras changes which cameras a user may see (nil = all).
-func (s *UserStore) SetCameras(username string, cameras *[]string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	i := s.findLocked(username)
-	if i < 0 {
-		return ErrNoSuchUser
-	}
-	prev := s.users[i].Cameras
-	if cameras != nil {
-		list := append([]string{}, (*cameras)...)
-		cameras = &list
-	}
-	s.users[i].Cameras = cameras
-	if err := s.saveLocked(); err != nil {
-		s.users[i].Cameras = prev
-		return err
-	}
-	return nil
-}
-
-// Views returns a user's own saved views.
-func (s *UserStore) Views(username string) []config.View {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	i := s.findLocked(username)
-	if i < 0 {
-		return []config.View{}
-	}
-	return append([]config.View{}, s.users[i].Views...)
-}
-
-// SetViews replaces a user's own saved views.
-func (s *UserStore) SetViews(username string, views []config.View) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	i := s.findLocked(username)
-	if i < 0 {
-		return ErrNoSuchUser
-	}
-	prev := s.users[i].Views
-	s.users[i].Views = append([]config.View{}, views...)
-	if err := s.saveLocked(); err != nil {
-		s.users[i].Views = prev
 		return err
 	}
 	return nil
@@ -522,15 +450,6 @@ func (s *sessions) get(token string) (session, bool) {
 	}
 	sess.lastSeen = now
 	return *sess, true
-}
-
-// alive reports whether a session still exists and has not idled out,
-// without counting as use.
-func (s *sessions) alive(token string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sess := s.m[token]
-	return sess != nil && s.now().Sub(sess.lastSeen) <= SessionIdleTimeout
 }
 
 func (s *sessions) reissued(token string) {

@@ -1,4 +1,4 @@
-package stream
+package worker
 
 import (
 	"bytes"
@@ -23,12 +23,11 @@ import (
 	"github.com/jxburros/buttercams/internal/mp4meta"
 )
 
-// Processor turns the RTP packets of one session into samples. It never
+// processor turns the RTP packets of one session into samples. It never
 // decodes video: it only reassembles access units and reads NAL unit headers
-// and parameter sets (spec rule 2). The recorder and the media process use it
-// alike.
-type Processor struct {
-	videoFormat format.Format
+// and parameter sets (spec rule 2).
+type processor struct {
+	sess *session
 
 	codec  string
 	dec264 *rtph264.Decoder
@@ -36,7 +35,7 @@ type Processor struct {
 	dts264 *h264.DTSExtractor
 	dts265 *h265.DTSExtractor
 
-	params      VideoParams
+	params      videoParams
 	paramsDirty bool // parameter sets changed since the caller last looked
 	started     bool // a keyframe has been seen
 	dtsFailed   bool
@@ -45,32 +44,16 @@ type Processor struct {
 	height      int
 
 	audio       audioHandler
-	audioParams *AudioParams
+	audioParams *audioParams
 	audioErr    string // set once when audio processing failed
 
-	out []Sample
+	out []sample
 }
 
-// VideoCodecName returns "h264" or "h265" for a supported video format, and
-// "" for anything else.
-func VideoCodecName(f format.Format) string {
-	switch f.(type) {
-	case *format.H264:
-		return "h264"
-	case *format.H265:
-		return "h265"
-	}
-	return ""
-}
-
-// NewProcessor prepares a processor for one video format and, optionally,
-// one audio format (nil for none). An audio format that cannot be handled
-// does not fail: AudioErr explains why audio is left out.
-func NewProcessor(videoFormat, audioFormat format.Format) (*Processor, error) {
-	codec := VideoCodecName(videoFormat)
-	p := &Processor{videoFormat: videoFormat, codec: codec, params: VideoParams{Codec: codec}}
+func newProcessor(s *session) (*processor, error) {
+	p := &processor{sess: s, codec: s.videoCodec, params: videoParams{codec: s.videoCodec}}
 	var err error
-	switch f := videoFormat.(type) {
+	switch f := s.videoFormat.(type) {
 	case *format.H264:
 		if p.dec264, err = f.CreateDecoder(); err != nil {
 			return nil, err
@@ -78,8 +61,8 @@ func NewProcessor(videoFormat, audioFormat format.Format) (*Processor, error) {
 		p.dts264 = &h264.DTSExtractor{}
 		p.dts264.Initialize()
 		sps, pps := f.SafeParams()
-		p.setParam(&p.params.SPS, sps)
-		p.setParam(&p.params.PPS, pps)
+		p.setParam(&p.params.sps, sps)
+		p.setParam(&p.params.pps, pps)
 	case *format.H265:
 		if p.dec265, err = f.CreateDecoder(); err != nil {
 			return nil, err
@@ -87,16 +70,16 @@ func NewProcessor(videoFormat, audioFormat format.Format) (*Processor, error) {
 		p.dts265 = &h265.DTSExtractor{}
 		p.dts265.Initialize()
 		vps, sps, pps := f.SafeParams()
-		p.setParam(&p.params.VPS, vps)
-		p.setParam(&p.params.SPS, sps)
-		p.setParam(&p.params.PPS, pps)
+		p.setParam(&p.params.vps, vps)
+		p.setParam(&p.params.sps, sps)
+		p.setParam(&p.params.pps, pps)
 	default:
 		return nil, fmt.Errorf("unsupported video format %T", f)
 	}
 	p.paramsDirty = false
 
-	if audioFormat != nil {
-		h, err := newAudioHandler(audioFormat)
+	if s.audio != nil {
+		h, err := newAudioHandler(s.audio)
 		if err != nil {
 			p.audioErr = "audio not recorded: " + err.Error()
 		} else {
@@ -108,56 +91,44 @@ func NewProcessor(videoFormat, audioFormat format.Format) (*Processor, error) {
 	return p, nil
 }
 
-// Params returns the current video parameter sets.
-func (p *Processor) Params() VideoParams { return p.params }
-
-// AudioParams describes the audio samples produced, or nil without audio.
-func (p *Processor) AudioParams() *AudioParams { return p.audioParams }
-
-// AudioErr explains why audio is not produced; empty when it is.
-func (p *Processor) AudioErr() string { return p.audioErr }
-
-// Size returns the picture size read from the SPS (0 until known).
-func (p *Processor) Size() (width, height int) { return p.width, p.height }
-
-func (p *Processor) setParam(dst *[]byte, v []byte) {
+func (p *processor) setParam(dst *[]byte, v []byte) {
 	if len(v) == 0 || bytes.Equal(*dst, v) {
 		return
 	}
 	*dst = append([]byte(nil), v...)
 	p.paramsDirty = true
-	if dst == &p.params.SPS {
+	if dst == &p.params.sps {
 		p.readSPS()
 	}
 }
 
-func (p *Processor) readSPS() {
+func (p *processor) readSPS() {
 	defer func() { recover() }() // a malformed SPS must not take the camera down
 	if p.codec == "h264" {
 		var sps h264.SPS
-		if sps.Unmarshal(p.params.SPS) == nil {
+		if sps.Unmarshal(p.params.sps) == nil {
 			p.width, p.height = sps.Width(), sps.Height()
 		}
 		return
 	}
 	var sps h265.SPS
-	if sps.Unmarshal(p.params.SPS) == nil {
+	if sps.Unmarshal(p.params.sps) == nil {
 		p.width, p.height = sps.Width(), sps.Height()
 	}
 }
 
-// TakeParamsDirty reports whether the parameter sets changed since the last
+// takeParamsDirty reports whether the parameter sets changed since the last
 // call.
-func (p *Processor) TakeParamsDirty() bool {
+func (p *processor) takeParamsDirty() bool {
 	d := p.paramsDirty
 	p.paramsDirty = false
 	return d
 }
 
-// Reset forgets partial access units after packets were lost.
-func (p *Processor) Reset() {
+// reset forgets partial access units after packets were lost.
+func (p *processor) reset() {
 	p.started = false
-	switch f := p.videoFormat.(type) {
+	switch f := p.sess.videoFormat.(type) {
 	case *format.H264:
 		if d, err := f.CreateDecoder(); err == nil {
 			p.dec264 = d
@@ -173,9 +144,9 @@ func (p *Processor) Reset() {
 	}
 }
 
-// Push processes one packet and returns the samples it completed. The
+// push processes one packet and returns the samples it completed. The
 // returned slice is reused by the next call.
-func (p *Processor) Push(pkt *Packet) []Sample {
+func (p *processor) push(pkt *Packet) []sample {
 	p.out = p.out[:0]
 	if !pkt.PTSValid {
 		return nil
@@ -188,7 +159,7 @@ func (p *Processor) Push(pkt *Packet) []Sample {
 	return p.out
 }
 
-func (p *Processor) pushVideo(pkt *Packet) {
+func (p *processor) pushVideo(pkt *Packet) {
 	var au [][]byte
 	var err error
 	if p.codec == "h264" {
@@ -215,20 +186,20 @@ func (p *Processor) pushVideo(pkt *Packet) {
 		if p.codec == "h264" {
 			switch h264.NALUType(nalu[0] & 0x1F) {
 			case h264.NALUTypeSPS:
-				p.setParam(&p.params.SPS, nalu)
+				p.setParam(&p.params.sps, nalu)
 				hasParams = true
 			case h264.NALUTypePPS:
-				p.setParam(&p.params.PPS, nalu)
+				p.setParam(&p.params.pps, nalu)
 			}
 		} else {
 			switch h265.NALUType((nalu[0] >> 1) & 0x3F) {
 			case h265.NALUType_VPS_NUT:
-				p.setParam(&p.params.VPS, nalu)
+				p.setParam(&p.params.vps, nalu)
 			case h265.NALUType_SPS_NUT:
-				p.setParam(&p.params.SPS, nalu)
+				p.setParam(&p.params.sps, nalu)
 				hasParams = true
 			case h265.NALUType_PPS_NUT:
-				p.setParam(&p.params.PPS, nalu)
+				p.setParam(&p.params.pps, nalu)
 			}
 		}
 	}
@@ -240,7 +211,7 @@ func (p *Processor) pushVideo(pkt *Packet) {
 		key = h265.IsRandomAccess(au)
 	}
 	if !p.started {
-		if !key || !p.params.Complete() {
+		if !key || !p.params.complete() {
 			return
 		}
 		p.started = true
@@ -256,12 +227,12 @@ func (p *Processor) pushVideo(pkt *Packet) {
 		pts = dts
 	}
 
-	p.out = append(p.out, Sample{Video: true, PTS: pts, DTS: dts, Key: key, NALUs: au, Recv: pkt.Recv})
+	p.out = append(p.out, sample{video: true, pts: pts, dts: dts, key: key, nalus: au, recv: pkt.Recv})
 }
 
 // extractDTS derives the decode time from the picture order. Streams without
 // B-frames (nearly every camera) have DTS equal to PTS.
-func (p *Processor) extractDTS(au [][]byte, pts int64, key, hasParams bool) (dts int64) {
+func (p *processor) extractDTS(au [][]byte, pts int64, key, hasParams bool) (dts int64) {
 	if p.dtsFailed {
 		return pts
 	}
@@ -277,9 +248,9 @@ func (p *Processor) extractDTS(au [][]byte, pts int64, key, hasParams bool) (dts
 	if key && !hasParams {
 		in = make([][]byte, 0, len(au)+3)
 		if p.codec == "h265" {
-			in = append(in, p.params.VPS)
+			in = append(in, p.params.vps)
 		}
-		in = append(in, p.params.SPS, p.params.PPS)
+		in = append(in, p.params.sps, p.params.pps)
 		in = append(in, au...)
 	}
 	var err error
@@ -295,7 +266,7 @@ func (p *Processor) extractDTS(au [][]byte, pts int64, key, hasParams bool) (dts
 	return dts
 }
 
-func (p *Processor) pushAudio(pkt *Packet) {
+func (p *processor) pushAudio(pkt *Packet) {
 	if p.audio == nil {
 		return
 	}
@@ -312,7 +283,7 @@ func (p *Processor) pushAudio(pkt *Packet) {
 		return
 	}
 	for i := range samples {
-		samples[i].Recv = pkt.Recv
+		samples[i].recv = pkt.Recv
 	}
 	p.out = append(p.out, samples...)
 }
@@ -321,12 +292,12 @@ func (p *Processor) pushAudio(pkt *Packet) {
 
 // audioHandler turns the RTP packets of one audio track into samples.
 type audioHandler interface {
-	push(pkt *rtp.Packet, pts int64) ([]Sample, error)
-	params() AudioParams
+	push(pkt *rtp.Packet, pts int64) ([]sample, error)
+	params() audioParams
 }
 
-func newAudioHandler(af format.Format) (audioHandler, error) {
-	switch f := af.(type) {
+func newAudioHandler(t *audioTrack) (audioHandler, error) {
+	switch f := t.format.(type) {
 	case *format.MPEG4Audio:
 		dec, err := f.CreateDecoder()
 		if err != nil {
@@ -378,7 +349,7 @@ func newAudioHandler(af format.Format) (audioHandler, error) {
 		}
 		return &pcmHandler{g726: dec, tr: tr}, nil
 	}
-	return nil, fmt.Errorf("unsupported audio format %s", af.Codec())
+	return nil, fmt.Errorf("unsupported audio format %s", t.format.Codec())
 }
 
 // aacHandler copies AAC access units as received.
@@ -386,22 +357,22 @@ type aacHandler struct {
 	dec  *rtpmpeg4audio.Decoder
 	cfg  mpeg4audio.AudioSpecificConfig
 	rate int
-	out  []Sample
+	out  []sample
 }
 
-func (h *aacHandler) params() AudioParams {
-	return AudioParams{Name: "aac", Codec: &codecs.MPEG4Audio{Config: h.cfg}, Timescale: uint32(h.rate)}
+func (h *aacHandler) params() audioParams {
+	return audioParams{name: "aac", codec: &codecs.MPEG4Audio{Config: h.cfg}, timescale: uint32(h.rate)}
 }
 
-func (h *aacHandler) push(pkt *rtp.Packet, pts int64) ([]Sample, error) {
+func (h *aacHandler) push(pkt *rtp.Packet, pts int64) ([]sample, error) {
 	aus, err := h.dec.Decode(pkt)
 	if err != nil {
 		return nil, nil // fragment of a larger unit, or a damaged packet
 	}
 	h.out = h.out[:0]
 	for i, au := range aus {
-		h.out = append(h.out, Sample{PTS: pts + int64(i)*mpeg4audio.SamplesPerAccessUnit, DTS: pts + int64(i)*mpeg4audio.SamplesPerAccessUnit,
-			Dur: mpeg4audio.SamplesPerAccessUnit, Key: true, Data: au})
+		h.out = append(h.out, sample{pts: pts + int64(i)*mpeg4audio.SamplesPerAccessUnit, dts: pts + int64(i)*mpeg4audio.SamplesPerAccessUnit,
+			dur: mpeg4audio.SamplesPerAccessUnit, key: true, data: au})
 	}
 	return h.out, nil
 }
@@ -412,14 +383,14 @@ type latmHandler struct {
 	mux  *mpeg4audio.StreamMuxConfig
 	cfg  mpeg4audio.AudioSpecificConfig
 	rate int
-	out  []Sample
+	out  []sample
 }
 
-func (h *latmHandler) params() AudioParams {
-	return AudioParams{Name: "aac", Codec: &codecs.MPEG4Audio{Config: h.cfg}, Timescale: uint32(h.rate)}
+func (h *latmHandler) params() audioParams {
+	return audioParams{name: "aac", codec: &codecs.MPEG4Audio{Config: h.cfg}, timescale: uint32(h.rate)}
 }
 
-func (h *latmHandler) push(pkt *rtp.Packet, pts int64) ([]Sample, error) {
+func (h *latmHandler) push(pkt *rtp.Packet, pts int64) ([]sample, error) {
 	buf, err := h.dec.Decode(pkt)
 	if err != nil {
 		return nil, nil
@@ -435,7 +406,7 @@ func (h *latmHandler) push(pkt *rtp.Packet, pts int64) ([]Sample, error) {
 			continue
 		}
 		t := pts + n*mpeg4audio.SamplesPerAccessUnit
-		h.out = append(h.out, Sample{PTS: t, DTS: t, Dur: mpeg4audio.SamplesPerAccessUnit, Key: true, Data: subframe[0][0]})
+		h.out = append(h.out, sample{pts: t, dts: t, dur: mpeg4audio.SamplesPerAccessUnit, key: true, data: subframe[0][0]})
 		n++
 	}
 	return h.out, nil
@@ -445,14 +416,14 @@ func (h *latmHandler) push(pkt *rtp.Packet, pts int64) ([]Sample, error) {
 type opusHandler struct {
 	dec      *rtpsimpleaudio.Decoder
 	channels int
-	out      []Sample
+	out      []sample
 }
 
-func (h *opusHandler) params() AudioParams {
-	return AudioParams{Name: "opus", Codec: &codecs.Opus{ChannelCount: h.channels}, Timescale: 48000}
+func (h *opusHandler) params() audioParams {
+	return audioParams{name: "opus", codec: &codecs.Opus{ChannelCount: h.channels}, timescale: 48000}
 }
 
-func (h *opusHandler) push(pkt *rtp.Packet, pts int64) ([]Sample, error) {
+func (h *opusHandler) push(pkt *rtp.Packet, pts int64) ([]sample, error) {
 	data, err := h.dec.Decode(pkt)
 	if err != nil || len(data) == 0 {
 		return nil, nil
@@ -461,7 +432,7 @@ func (h *opusHandler) push(pkt *rtp.Packet, pts int64) ([]Sample, error) {
 	if dur <= 0 {
 		return nil, nil
 	}
-	h.out = append(h.out[:0], Sample{PTS: pts, DTS: pts, Dur: uint32(dur), Key: true, Data: data})
+	h.out = append(h.out[:0], sample{pts: pts, dts: pts, dur: uint32(dur), key: true, data: data})
 	return h.out, nil
 }
 
@@ -473,20 +444,20 @@ type pcmHandler struct {
 	g726  *audio.G726Decoder
 	tr    *audio.Transcoder
 	pcm   []int16
-	out   []Sample
+	out   []sample
 }
 
-func (h *pcmHandler) params() AudioParams {
-	return AudioParams{
-		Name: "aac",
-		Codec: &codecs.MPEG4Audio{Config: mpeg4audio.AudioSpecificConfig{
+func (h *pcmHandler) params() audioParams {
+	return audioParams{
+		name: "aac",
+		codec: &codecs.MPEG4Audio{Config: mpeg4audio.AudioSpecificConfig{
 			Type: mpeg4audio.ObjectTypeAACLC, SampleRate: audio.OutRate, ChannelConfig: 1, ChannelCount: 1,
 		}},
-		Timescale: audio.OutRate,
+		timescale: audio.OutRate,
 	}
 }
 
-func (h *pcmHandler) push(pkt *rtp.Packet, pts int64) ([]Sample, error) {
+func (h *pcmHandler) push(pkt *rtp.Packet, pts int64) ([]sample, error) {
 	h.pcm = h.pcm[:0]
 	if h.g711 != nil {
 		raw, err := h.g711.Decode(pkt)
@@ -507,7 +478,7 @@ func (h *pcmHandler) push(pkt *rtp.Packet, pts int64) ([]Sample, error) {
 	}
 	h.out = h.out[:0]
 	for _, f := range frames {
-		h.out = append(h.out, Sample{PTS: f.PTS, DTS: f.PTS, Dur: audio.FrameSize, Key: true, Data: f.Data})
+		h.out = append(h.out, sample{pts: f.PTS, dts: f.PTS, dur: audio.FrameSize, key: true, data: f.Data})
 	}
 	return h.out, nil
 }

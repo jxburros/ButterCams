@@ -3,21 +3,30 @@ package worker
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 
-	"github.com/jxburros/buttercams/internal/stream"
+	"github.com/pion/rtp"
 )
 
-// Track and Packet live in internal/stream, shared with the media process.
-type (
-	Track  = stream.Track
-	Packet = stream.Packet
-)
+// Track identifies the stream a packet belongs to.
+type Track uint8
 
 // Tracks.
 const (
-	TrackVideo = stream.TrackVideo
-	TrackAudio = stream.TrackAudio
+	TrackVideo Track = iota
+	TrackAudio
 )
+
+// Packet is one RTP packet exactly as received from a camera, with the timing
+// information needed to use it.
+type Packet struct {
+	Session  uint64 // the RTSP session that produced it
+	Track    Track
+	RTP      *rtp.Packet
+	PTS      int64 // presentation time in clock-rate units; valid when PTSValid
+	PTSValid bool
+	Recv     time.Time // wall clock (with monotonic reading) at receipt
+}
 
 // Reader receives a camera's packets on a bounded channel.
 type Reader struct {

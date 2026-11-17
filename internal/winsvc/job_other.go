@@ -46,6 +46,3 @@ func (j *Job) Close() { j.Terminate() }
 // PrepareChild ties the child's lifetime to the guardian where the platform
 // supports it (see job_linux.go).
 func PrepareChild(cmd *exec.Cmd) { prepareChild(cmd) }
-
-// SetLowPriority is a no-op on development systems.
-func SetLowPriority(*exec.Cmd) {}

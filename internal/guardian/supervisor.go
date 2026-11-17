@@ -39,12 +39,6 @@ type ProcSpec struct {
 	HeartbeatTimeout time.Duration
 	RestartDelay     time.Duration // base delay; 0 = RestartDelay
 	MaxRestartDelay  time.Duration // 0 = MaxRestartDelay
-	// LowPriority starts the process at below-normal priority (the media
-	// process: viewers must never take CPU from the recorders).
-	LowPriority bool
-	// MemoryLimit restarts the process at once when the memory it reports
-	// exceeds it; 0 = no limit. (Workers use their own, gentler rule.)
-	MemoryLimit uint64
 
 	// OnStart runs each time the process has started; it sends the process
 	// everything it needs to resume (its cameras, the copy queue …).
@@ -208,9 +202,6 @@ func (p *Proc) runOnce() string {
 	cmd := exec.Command(p.spec.Exe, p.spec.Args...)
 	cmd.Env = append(cmd.Environ(), p.spec.Env...)
 	winsvc.PrepareChild(cmd)
-	if p.spec.LowPriority {
-		winsvc.SetLowPriority(cmd)
-	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return "cannot create pipe: " + err.Error()
@@ -280,9 +271,6 @@ func (p *Proc) runOnce() string {
 			if hb, ok := msg.(*ipc.Heartbeat); ok {
 				p.lastBeat.Store(time.Now().UnixNano())
 				p.memBytes.Store(hb.MemBytes)
-				if p.spec.MemoryLimit > 0 && hb.MemBytes > p.spec.MemoryLimit {
-					p.kill(fmt.Sprintf("memory use above %d MB", p.spec.MemoryLimit>>20))
-				}
 				continue
 			}
 			p.lastBeat.Store(time.Now().UnixNano()) // any message proves life

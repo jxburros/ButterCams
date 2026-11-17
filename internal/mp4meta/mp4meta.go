@@ -25,8 +25,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/jxburros/buttercams/internal/winsvc"
 )
 
 // Metadata keys stored in the moov.
@@ -556,7 +554,7 @@ func readInit(r io.ReaderAt, fileSize int64) (Info, error) {
 // needs three small reads (moov, mfro, close marker); otherwise it falls back
 // to walking every fragment.
 func Read(path string) (Info, error) {
-	f, err := winsvc.OpenShared(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return Info{}, err
 	}
@@ -650,7 +648,7 @@ func Repair(path, reason string) (Info, string, error) {
 
 // HashFile returns the SHA-256 and size of a file.
 func HashFile(path string) (string, int64, error) {
-	f, err := winsvc.OpenShared(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return "", 0, err
 	}

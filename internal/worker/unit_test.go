@@ -130,7 +130,7 @@ func TestSegmentWriterFragmentsAndNames(t *testing.T) {
 	dir := t.TempDir()
 	sps := []byte{0x67, 0x42, 0xc0, 0x0d, 0xd9, 0x01, 0x41, 0xfb, 0x01, 0x10, 0x00, 0x00, 0x03, 0x00, 0x10, 0x00, 0x00, 0x03, 0x03, 0xc0, 0xf1, 0x42, 0x99, 0x60}
 	pps := []byte{0x68, 0xcb, 0x83, 0xcb, 0x20}
-	vp := videoParams{Codec: "h264", SPS: sps, PPS: pps}
+	vp := videoParams{codec: "h264", sps: sps, pps: pps}
 	start := time.Date(2026, 11, 14, 9, 30, 0, 123_000_000, time.Local)
 
 	open := func(taken func(string) bool) *segment {
@@ -151,7 +151,7 @@ func TestSegmentWriterFragmentsAndNames(t *testing.T) {
 	n := 0
 	for i := 0; i < 150; i++ {
 		key := i == 0 || i == 15
-		u := sample{Video: true, PTS: 1000 + int64(i)*frame, DTS: 1000 + int64(i)*frame, Key: key, NALUs: [][]byte{{0x65}}}
+		u := sample{video: true, pts: 1000 + int64(i)*frame, dts: 1000 + int64(i)*frame, key: key, nalus: [][]byte{{0x65}}}
 		if err := seg.writeVideo(u); err != nil {
 			t.Fatal(err)
 		}
@@ -211,13 +211,13 @@ func TestSegmentWriterSurvivesTimestampJumps(t *testing.T) {
 	dir := t.TempDir()
 	sps := []byte{0x67, 0x42, 0xc0, 0x0d, 0xd9, 0x01, 0x41, 0xfb, 0x01, 0x10, 0x00, 0x00, 0x03, 0x00, 0x10, 0x00, 0x00, 0x03, 0x03, 0xc0, 0xf1, 0x42, 0x99, 0x60}
 	pps := []byte{0x68, 0xcb, 0x83, 0xcb, 0x20}
-	seg, err := openSegment(dir, "cam", time.Now(), videoParams{Codec: "h264", SPS: sps, PPS: pps}, nil, true, nil)
+	seg, err := openSegment(dir, "cam", time.Now(), videoParams{codec: "h264", sps: sps, pps: pps}, nil, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dts := []int64{0, 6000, 12000, 5_000_000_000, 5_000_006_000, 100, 6100}
 	for i, d := range dts {
-		if err := seg.writeVideo(sample{Video: true, PTS: d, DTS: d, Key: i == 0, NALUs: [][]byte{{0x65}}}); err != nil {
+		if err := seg.writeVideo(sample{video: true, pts: d, dts: d, key: i == 0, nalus: [][]byte{{0x65}}}); err != nil {
 			t.Fatal(err)
 		}
 	}

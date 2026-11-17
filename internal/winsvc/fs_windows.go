@@ -131,21 +131,3 @@ func ProcessMemoryBytes() uint64 {
 	}
 	return uint64(c.privateUsage)
 }
-
-// OpenShared opens a file for reading with read, write and delete sharing
-// (spec 16.9): while it is open the recorder can still rename it, the mover can
-// still delete it and retention can still remove it. Go's os.Open does not
-// share delete, so a viewer would otherwise block those operations.
-func OpenShared(path string) (*os.File, error) {
-	p, err := windows.UTF16PtrFromString(path)
-	if err != nil {
-		return nil, err
-	}
-	h, err := windows.CreateFile(p, windows.GENERIC_READ,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
-		nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
-	if err != nil {
-		return nil, &os.PathError{Op: "open", Path: path, Err: err}
-	}
-	return os.NewFile(uintptr(h), path), nil
-}

@@ -14,22 +14,16 @@ import (
 func isRemoteDrive(path string) bool { return winsvc.IsRemoteDrive(path) }
 
 // hub fans server-sent events out to connected browsers. A slow client
-// loses events; it never holds anything up. Each subscriber carries the
-// camera permissions of its user, so a limited Viewer never receives events
-// or statistics of other cameras (spec 16.6).
+// loses events; it never holds anything up.
 type hub struct {
 	mu     sync.Mutex
-	subs   map[chan []byte]*subscriber
+	subs   map[chan []byte]struct{}
 	closed bool
 }
 
-type subscriber struct {
-	access func() camAccess // read at publish time: permission changes apply at once
-}
+func newHub() *hub { return &hub{subs: map[chan []byte]struct{}{}} }
 
-func newHub() *hub { return &hub{subs: map[chan []byte]*subscriber{}} }
-
-func (h *hub) subscribe(access func() camAccess) chan []byte {
+func (h *hub) subscribe() chan []byte {
 	ch := make(chan []byte, 64)
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -37,7 +31,7 @@ func (h *hub) subscribe(access func() camAccess) chan []byte {
 		close(ch)
 		return ch
 	}
-	h.subs[ch] = &subscriber{access: access}
+	h.subs[ch] = struct{}{}
 	return ch
 }
 
@@ -74,45 +68,17 @@ func frame(event string, v any) []byte {
 	return []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", event, data))
 }
 
-// publishFor sends each subscriber the frame built for its permissions.
-// Frames for unlimited subscribers are built once. build returns nil to send
-// nothing to that subscriber.
-func (h *hub) publishFor(build func(camAccess) []byte) {
-	h.mu.Lock()
-	subs := make(map[chan []byte]*subscriber, len(h.subs))
-	for ch, sub := range h.subs {
-		subs[ch] = sub
-	}
-	h.mu.Unlock()
-	if len(subs) == 0 {
+func (h *hub) publish(event string, v any) {
+	if h.count() == 0 {
 		return
 	}
-	var shared []byte
-	sharedBuilt := false
-	frames := make(map[chan []byte][]byte, len(subs))
-	for ch, sub := range subs {
-		acc := allCameras
-		if sub.access != nil {
-			acc = sub.access()
-		}
-		if !acc.limited {
-			if !sharedBuilt {
-				shared, sharedBuilt = build(acc), true
-			}
-			frames[ch] = shared
-			continue
-		}
-		frames[ch] = build(acc)
+	f := frame(event, v)
+	if f == nil {
+		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for ch, f := range frames {
-		if f == nil {
-			continue
-		}
-		if _, still := h.subs[ch]; !still {
-			continue // unsubscribed (and closed) meanwhile
-		}
+	for ch := range h.subs {
 		select {
 		case ch <- f:
 		default: // this client is not keeping up
@@ -121,22 +87,15 @@ func (h *hub) publishFor(build func(camAccess) []byte) {
 }
 
 // PublishEvent sends a new row of the events table to connected browsers.
-func (s *Server) PublishEvent(e index.Event) {
-	v := toEventView(e)
-	s.hub.publishFor(func(acc camAccess) []byte {
-		if e.CameraID != "" && !acc.allowed(e.CameraID) {
-			return nil
-		}
-		return frame("event", v)
-	})
-}
+func (s *Server) PublishEvent(e index.Event) { s.hub.publish("event", toEventView(e)) }
 
 // PublishHealth sends the overall status after a health check.
-func (s *Server) PublishHealth(Health) {
-	s.hub.publishFor(func(acc camAccess) []byte { return frame("health", s.healthViewFor(acc)) })
+func (s *Server) PublishHealth(h Health) {
+	s.hub.publish("health", healthView{Health: h, Version: s.healthView().Version,
+		UptimeSec: int64(time.Since(s.backend.StartedAt()).Seconds())})
 }
 
-func (s *Server) camerasLive(acc camAccess) map[string]any {
+func (s *Server) camerasLive() map[string]any {
 	type item struct {
 		ID    string     `json:"id"`
 		Stats *statsView `json:"stats"`
@@ -145,9 +104,6 @@ func (s *Server) camerasLive(acc camAccess) map[string]any {
 	cfg := s.backend.Config()
 	out := make([]item, 0, len(cfg.Cameras))
 	for _, c := range cfg.Cameras {
-		if !acc.allowed(c.ID) {
-			continue
-		}
 		it := item{ID: c.ID}
 		if st, ok := stats[c.ID]; ok {
 			it.Stats = toStatsView(st)
@@ -163,9 +119,8 @@ func (s *Server) PublishLive() {
 	if s.hub.count() == 0 {
 		return
 	}
-	s.hub.publishFor(func(acc camAccess) []byte { return frame("cameras", s.camerasLive(acc)) })
-	dest := frame("destinations", s.destinationsPayload())
-	s.hub.publishFor(func(camAccess) []byte { return dest })
+	s.hub.publish("cameras", s.camerasLive())
+	s.hub.publish("destinations", s.destinationsPayload())
 }
 
 // handleStream is GET /api/v1/stream (Server-Sent Events).
@@ -181,12 +136,9 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	sess, _ := sessionOf(r)
-	access := func() camAccess { return s.accessFor(sess.username, sess.role) }
-	ch := s.hub.subscribe(access)
+	ch := s.hub.subscribe()
 	defer s.hub.unsubscribe(ch)
-	acc := access()
-	for _, f := range [][]byte{frame("health", s.healthViewFor(acc)), frame("cameras", s.camerasLive(acc)),
+	for _, f := range [][]byte{frame("health", s.healthView()), frame("cameras", s.camerasLive()),
 		frame("destinations", s.destinationsPayload())} {
 		if _, err := w.Write(f); err != nil {
 			return
@@ -196,18 +148,10 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 
 	keepAlive := time.NewTicker(25 * time.Second)
 	defer keepAlive.Stop()
-	check := time.NewTicker(5 * time.Second)
-	defer check.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
-		case <-check.C:
-			// Sign-out, a deleted account or an expired session ends the
-			// stream; it must not keep delivering after that.
-			if !s.sessions.alive(sess.token) {
-				return
-			}
 		case f, open := <-ch:
 			if !open {
 				return
