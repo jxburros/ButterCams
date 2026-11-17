@@ -14,6 +14,7 @@ import (
 	"github.com/jxburros/buttercams/internal/ipc"
 	"github.com/jxburros/buttercams/internal/mover"
 	"github.com/jxburros/buttercams/internal/naming"
+	"github.com/jxburros/buttercams/internal/winsvc"
 )
 
 // Health check thresholds (spec 10.1).
@@ -164,6 +165,18 @@ func (g *Guardian) runHealthCheck() {
 				fmt.Sprintf("Destination %s has been failing for %s; %d files are waiting in staging. Last error: %s",
 					f.name, roundDuration(age), n, f.err), "")
 		}
+	}
+
+	// Folders shared by two destinations (or with staging), from a
+	// configuration made before this was refused (decision 61).
+	for _, o := range config.StorageOverlaps(cfg, config.Env{IsRemoteDrive: winsvc.IsRemoteDrive}) {
+		var i int
+		name := o.Field
+		if _, err := fmt.Sscanf(o.Field, "destinations[%d].path", &i); err == nil && i < len(cfg.Destinations) {
+			name = cfg.Destinations[i].Name
+		}
+		add(ipc.SevWarning, "destination_overlap",
+			fmt.Sprintf("Destination %s: %s Change its folder on the Destinations page.", name, o.Message), "")
 	}
 
 	// 6: database writes.

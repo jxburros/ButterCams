@@ -1001,22 +1001,39 @@ func (c *Camera) recoverParts() {
 	if len(mine) == 0 {
 		return
 	}
+	// One at a time: after a crash there may be a file per camera, each
+	// read in full to be hashed.
+	var claimed []string
+	for _, p := range mine {
+		if c.w.startRepair(p) {
+			claimed = append(claimed, p)
+		}
+	}
 	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				c.log.Error("recovering interrupted recordings panicked", "panic", fmt.Sprint(r))
-			}
-		}()
-		for _, p := range mine {
-			c.repairPart(p)
+		for _, p := range claimed {
+			func() {
+				defer c.w.endRepair(p)
+				defer func() {
+					if r := recover(); r != nil {
+						c.log.Error("recovering an interrupted recording panicked", "file", p, "panic", fmt.Sprint(r))
+					}
+				}()
+				c.repairPart(p)
+			}()
 		}
 	}()
 }
 
 // repairPartAsync repairs a file beside the recording: the repair re-reads
-// the whole file to hash it, which must never hold up the next file.
+// the whole file to hash it, which must never hold up the next file. A file
+// already being repaired (a camera removed and added again meanwhile) is not
+// repaired twice, and the worker waits for repairs before it exits.
 func (c *Camera) repairPartAsync(part string) {
+	if !c.w.startRepair(part) {
+		return
+	}
 	go func() {
+		defer c.w.endRepair(part)
 		defer func() {
 			if r := recover(); r != nil {
 				c.log.Error("repairing a recording panicked", "file", part, "panic", fmt.Sprint(r))

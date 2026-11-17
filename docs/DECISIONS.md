@@ -719,14 +719,19 @@ transaction, an index rebuild) would fill the pipe and block them. So:
 
 A camera deleted with "keep recordings" off is purged; files it closes late
 are purged too. A camera added again under the same id must keep what it
-records, so a purge covers only files that **started before** the deletion.
+records, so a purge covers files that started before the deletion, and any
+file while the camera is still deleted (its worker may start one more before
+the removal reaches it).
 
 ### 61. Destinations may not share folders
 
 Two destinations in the same folder, one inside another, or one in or
 around the staging folder would count one file as two copies, and retention
-on one would delete the only copy the index still lists elsewhere. The
-configuration is rejected. Paths are compared after removing trailing
+on one would delete the only copy the index still lists elsewhere. A change
+that brings in such a folder is refused. A configuration that already has
+one (made by an earlier version) still loads and records: refusing it at
+start-up would stop recording, so it is shown as a Warning on the Dashboard
+instead. Paths are compared after removing trailing
 separators, with `/` and `\` alike, and without case on Windows and for
 shares.
 

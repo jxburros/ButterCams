@@ -18,7 +18,9 @@ Recording:
   with the same name no longer deletes the new camera's recordings.
 - Two destinations, or a destination and the staging folder, can no longer
   be the same folder or one inside the other. That could leave the only
-  copy of a recording deleted while the index still listed it.
+  copy of a recording deleted while the index still listed it. Existing
+  destinations set up that way keep recording, with a warning on the
+  Dashboard.
 - A slow disk no longer makes a camera start extra files as if the clock
   had changed.
 - Staging that runs low on space no longer deletes more recordings than

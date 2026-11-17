@@ -43,6 +43,11 @@ type Worker struct {
 
 	sessionSeq atomic.Uint64
 
+	// Repairs of interrupted files run beside the recording (repairPartAsync).
+	repairMu  sync.Mutex
+	repairing map[string]bool
+	repairs   sync.WaitGroup
+
 	// The loopback restream (spec 16.3); nil while it is switched off. Only
 	// the message loop changes rs and rsToken.
 	rs           atomic.Pointer[restream.Server]
@@ -57,6 +62,29 @@ type Worker struct {
 }
 
 func (w *Worker) nextSessionID() uint64 { return w.sessionSeq.Add(1) }
+
+// startRepair claims a file for repair; false when it is already being
+// repaired.
+func (w *Worker) startRepair(path string) bool {
+	w.repairMu.Lock()
+	defer w.repairMu.Unlock()
+	if w.repairing == nil {
+		w.repairing = map[string]bool{}
+	}
+	if w.repairing[path] {
+		return false
+	}
+	w.repairing[path] = true
+	w.repairs.Add(1)
+	return true
+}
+
+func (w *Worker) endRepair(path string) {
+	w.repairMu.Lock()
+	delete(w.repairing, path)
+	w.repairMu.Unlock()
+	w.repairs.Done()
+}
 
 // send queues a message for the guardian. It never blocks (see outbox). A
 // failed write means the guardian is gone; the stdin reader notices that and
@@ -298,6 +326,16 @@ func (w *Worker) shutdown(why string) {
 			w.log.Warn("some cameras did not finalize their files in time")
 			return
 		}
+	}
+	// Repairs still running finish too, so their files are reported; one
+	// cut off is repaired at the next start.
+	repaired := make(chan struct{})
+	go func() { w.repairs.Wait(); close(repaired) }()
+	select {
+	case <-repaired:
+	case <-deadline:
+		w.log.Warn("a recording was still being repaired; it is finished at the next start")
+		return
 	}
 	w.log.Info("worker stopped; all files finalized")
 }

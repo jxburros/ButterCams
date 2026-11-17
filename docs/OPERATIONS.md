@@ -51,7 +51,9 @@ services. Use the `\\server\share` path.
 - **Type:** Local drive (fixed or attached disk) or Network share.
 - **Path:** e.g. `E:\Recordings` or `\\nas01\cameras`. Each destination
   needs its own folder: a folder that is the same as, inside or around
-  another destination's or the staging folder is refused.
+  another destination's or the staging folder is refused. (Destinations set
+  up that way by an earlier version keep working; the Dashboard shows a
+  warning until one of them is moved.)
 - **User name / password:** only for shares that need different credentials
   than the service account.
 - **Limit (GB):** when ButterCams' files on this destination exceed it, the

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"path"
 	"regexp"
 	"runtime"
 	"strings"
@@ -69,6 +70,70 @@ func (e Env) validLocalPath(p string) bool {
 	return strings.HasPrefix(p, "/")
 }
 
+// StorageOverlaps lists destinations whose folder is the same as, inside or
+// around the staging folder or another destination's (decision 61). Two such
+// places would count one file as two copies: retention on one deletes the
+// only copy while the index still lists the other.
+//
+// It is not part of Validate: a configuration written by an older version
+// may have such folders, and it must still load and record. New overlaps
+// are refused when the configuration is changed; existing ones are reported
+// as a health warning.
+func StorageOverlaps(c *Config, env Env) []FieldError {
+	var out []FieldError
+	stagingKey := env.pathKey(c.Staging.Path)
+	keys := make([]string, len(c.Destinations))
+	for i, d := range c.Destinations {
+		keys[i] = env.pathKey(d.Path)
+		if keys[i] == "" {
+			continue
+		}
+		f := fmt.Sprintf("destinations[%d].path", i)
+		if stagingKey != "" && (pathWithin(keys[i], stagingKey) || pathWithin(stagingKey, keys[i])) {
+			out = append(out, FieldError{Field: f, Message: "A destination cannot be the staging folder, or inside it or around it."})
+			continue
+		}
+		for j := 0; j < i; j++ {
+			if keys[j] != "" && (pathWithin(keys[i], keys[j]) || pathWithin(keys[j], keys[i])) {
+				out = append(out, FieldError{Field: f, Message: fmt.Sprintf(
+					"This folder is the same as, or inside, the folder of destination %q. Each destination needs its own folder.", c.Destinations[j].Name)})
+				break
+			}
+		}
+	}
+	return out
+}
+
+// NewStorageOverlaps returns the overlaps of next that old did not have:
+// those a change introduces.
+func NewStorageOverlaps(old, next *Config, env Env) []FieldError {
+	had := map[string]bool{}
+	if old != nil {
+		for _, o := range StorageOverlaps(old, env) {
+			had[overlapKey(old, o)] = true
+		}
+	}
+	var out []FieldError
+	for _, o := range StorageOverlaps(next, env) {
+		if !had[overlapKey(next, o)] {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// overlapKey names an overlap by the destination's id, which stays the same
+// when other destinations are added or removed.
+func overlapKey(c *Config, f FieldError) string {
+	var i int
+	if _, err := fmt.Sscanf(f.Field, "destinations[%d].path", &i); err == nil && i < len(c.Destinations) {
+		return c.Destinations[i].ID + "\x00" + env0(c.Destinations[i].Path) + "\x00" + f.Message
+	}
+	return f.Field + "\x00" + f.Message
+}
+
+func env0(p string) string { return strings.ToLower(strings.TrimSpace(p)) }
+
 // pathKey returns a path in a form where two spellings of the same folder
 // compare equal: one separator, no trailing separator, and on Windows no
 // case.
@@ -78,16 +143,17 @@ func (e Env) pathKey(p string) string {
 		return ""
 	}
 	if e.windows() || IsUNC(p) {
-		p = strings.ToLower(strings.ReplaceAll(p, "/", "\\"))
-		for strings.HasSuffix(p, "\\") && len(p) > 3 && !strings.HasSuffix(p, ":\\") {
-			p = strings.TrimSuffix(p, "\\")
+		// Clean with forward slashes ("." and ".." resolved, doubled and
+		// trailing separators gone), keeping a share's leading pair.
+		p = strings.ToLower(strings.ReplaceAll(p, "\\", "/"))
+		prefix := ""
+		if strings.HasPrefix(p, "//") {
+			prefix, p = "/", p[1:]
 		}
-		return p
+		p = prefix + path.Clean(p)
+		return strings.ReplaceAll(p, "/", "\\")
 	}
-	for strings.HasSuffix(p, "/") && len(p) > 1 {
-		p = strings.TrimSuffix(p, "/")
-	}
-	return p
+	return path.Clean(p)
 }
 
 // pathWithin reports whether path a is b or inside b (both from pathKey).
@@ -160,29 +226,6 @@ func Validate(c *Config, env Env) error {
 			ve.add(f("id"), "Another destination already uses the id %q.", d.ID)
 		}
 		destIDs[d.ID] = true
-	}
-
-	// Two places that are the same folder, or one inside the other, would
-	// count one file as two copies: retention on one deletes the only copy
-	// while the index still lists the other.
-	stagingKey := env.pathKey(c.Staging.Path)
-	keys := make([]string, len(c.Destinations))
-	for i, d := range c.Destinations {
-		keys[i] = env.pathKey(d.Path)
-		if keys[i] == "" {
-			continue
-		}
-		f := fmt.Sprintf("destinations[%d].path", i)
-		if stagingKey != "" && (pathWithin(keys[i], stagingKey) || pathWithin(stagingKey, keys[i])) {
-			ve.add(f, "A destination cannot be the staging folder, or inside it or around it.")
-			continue
-		}
-		for j := 0; j < i; j++ {
-			if keys[j] != "" && (pathWithin(keys[i], keys[j]) || pathWithin(keys[j], keys[i])) {
-				ve.add(f, "This folder is the same as, or inside, the folder of destination %q. Each destination needs its own folder.", c.Destinations[j].Name)
-				break
-			}
-		}
 	}
 
 	// cameras

@@ -447,9 +447,16 @@ func TestOverlappingStoragePathsRejected(t *testing.T) {
 		{ID: "e", Name: "E", Type: DestLocal, Path: `E:\Recordings2`, CapGB: 10, Enabled: true},
 		{ID: "f", Name: "F", Type: DestUNC, Path: `\\nas\cams`, CapGB: 10, Enabled: true},
 	}
+	c.Destinations = append(c.Destinations, Destination{ID: "g", Name: "G", Type: DestLocal, Path: `E:\x\..\Recordings2\.`, CapGB: 10, Enabled: true})
 	c.Normalize()
-	f := fieldsOf(t, Validate(c, winEnv))
-	for _, k := range []string{"destinations[1].path", "destinations[2].path", "destinations[3].path"} {
+	if err := Validate(c, winEnv); err != nil {
+		t.Fatalf("overlapping folders must not make a configuration unreadable: %v", err)
+	}
+	f := map[string]string{}
+	for _, o := range StorageOverlaps(c, winEnv) {
+		f[o.Field] = o.Message
+	}
+	for _, k := range []string{"destinations[1].path", "destinations[2].path", "destinations[3].path", "destinations[6].path"} {
 		if f[k] == "" {
 			t.Errorf("%s not reported: %v", k, f)
 		}
@@ -458,5 +465,25 @@ func TestOverlappingStoragePathsRejected(t *testing.T) {
 		if f[k] != "" {
 			t.Errorf("%s wrongly reported: %s", k, f[k])
 		}
+	}
+}
+
+// A change may not bring in a new overlap, but one that is already there does
+// not block other changes.
+func TestNewStorageOverlapsOnlyCountsNewOnes(t *testing.T) {
+	old := Default(`D:\staging`)
+	old.Destinations = []Destination{
+		{ID: "a", Name: "A", Type: DestLocal, Path: `E:\R`, CapGB: 10, Enabled: true},
+		{ID: "b", Name: "B", Type: DestLocal, Path: `E:\R`, CapGB: 10, Enabled: true},
+	}
+	old.Normalize()
+	next := old.Clone()
+	next.Logging.RetentionDays = 30
+	if ov := NewStorageOverlaps(old, next, winEnv); len(ov) != 0 {
+		t.Fatalf("an unrelated change was refused: %v", ov)
+	}
+	next.Destinations = append(next.Destinations, Destination{ID: "c", Name: "C", Type: DestLocal, Path: `E:\R\sub`, CapGB: 10, Enabled: true})
+	if ov := NewStorageOverlaps(old, next, winEnv); len(ov) != 1 || ov[0].Field != "destinations[2].path" {
+		t.Fatalf("a new overlap was not refused: %v", ov)
 	}
 }

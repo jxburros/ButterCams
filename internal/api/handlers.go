@@ -1410,23 +1410,29 @@ func (s *Server) handleUserUpdate(w http.ResponseWriter, r *http.Request) {
 		s.writeFail(w, err)
 		return
 	}
+	prev, _ := s.users.Get(name)
 	u, err := s.users.Update(name, in.Password, in.Role)
 	if err != nil {
 		s.writeFail(w, err)
 		return
 	}
-	// Whatever was stored applies to the user's open sessions at once.
 	me, _ := sessionOf(r)
 	if in.Password != "" {
 		s.sessions.dropUser(u.Username, me.token) // other sessions of that user must sign in again
 	}
-	s.sessions.setRole(u.Username, u.Role)
 	if setCams {
 		if u, err = s.users.SetCameras(u.Username, cams); err != nil {
+			// The limit could not be stored: the role goes back too, so the
+			// account never ends up with more access than before.
+			if in.Role != "" && prev.Role != "" && prev.Role != in.Role {
+				s.users.Update(name, "", prev.Role)
+			}
 			s.writeFail(w, err)
 			return
 		}
 	}
+	// What was stored applies to the user's open sessions at once.
+	s.sessions.setRole(u.Username, u.Role)
 	s.audit(r, "user_changed", "User "+u.Username+" was changed.", "")
 	writeJSON(w, http.StatusOK, s.accountView(u))
 }

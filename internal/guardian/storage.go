@@ -57,13 +57,22 @@ func (g *Guardian) saveOldStaging() {
 }
 
 // isPurged reports whether a recording belongs to a camera that was deleted
-// together with its recordings. Only files that started before the deletion
-// count: a camera added again under the same id keeps its new recordings.
+// together with its recordings: one that started before the deletion, or any
+// file while the camera is still deleted (its worker may start one more file
+// before the removal reaches it). A camera added again under the same id
+// keeps what it records.
 func (g *Guardian) isPurged(cameraID string, start time.Time) bool {
 	g.mu.Lock()
 	at, ok := g.purged[cameraID]
 	g.mu.Unlock()
-	return ok && start.Before(at)
+	if !ok {
+		return false
+	}
+	if start.Before(at) {
+		return true
+	}
+	_, configured := g.config().Camera(cameraID)
+	return !configured
 }
 
 func (g *Guardian) startMover() {
