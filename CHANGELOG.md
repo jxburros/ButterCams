@@ -49,6 +49,14 @@ Live view and playback:
 - Fast playback (8× and 16×) of high-bitrate cameras no longer stops with a
   "buffer full" error.
 - Live tiles whose stream cannot be shown no longer reconnect every second.
+- Full-quality live view no longer freezes for a few seconds at the top of
+  the hour, when the camera's connection is refreshed.
+- H.265 recordings report their format correctly to the browser, so
+  browsers that play H.265 recognise them.
+- Single view of a camera has its own address: the browser's or the
+  phone's Back button returns to the grid, and reloading the page keeps the
+  camera open.
+- "Turn sound on" is shown only when the stream being watched has sound.
 
 Accounts:
 
@@ -60,6 +68,13 @@ Accounts:
   cameras than asked for.
 - A Viewer limited to some cameras no longer sees other cameras' file names
   in destination errors.
+
+Other:
+
+- Changes to a camera or a destination are recorded on the Events page,
+  like additions and deletions.
+- Clearer messages when live view is switched off and after changing only
+  the staging free-space floor.
 
 ## 2.0.0
 

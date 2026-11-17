@@ -634,6 +634,7 @@ func (s *source) handleNext(p *stream.Packet) {
 		old := s.cur
 		s.cur, s.next = n, nil
 		s.needKey = false
+		s.h.log.Info("live source moved to the camera's new session", "camera", s.key.camera, "stream", s.key.stream)
 		s.mux.dropAudio()
 		go old.close()
 		s.syncAudio()

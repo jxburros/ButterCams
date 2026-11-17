@@ -48,6 +48,28 @@ export function liveEdgeAction(currentTime: number, bufferedEnd: number, current
 }
 
 /**
+ * Where to continue when playback stands at a hole in the buffer: data of a
+ * later range arrived but the browser will not play across the hole (a
+ * session switch at the top of the hour can leave one in the audio). Returns
+ * the start of the next range, or `null` when there is no hole to skip.
+ * `ranges` are the buffered ranges in order.
+ */
+export function holeSkip(ranges: Array<[number, number]>, currentTime: number): number | null {
+  for (let i = 0; i + 1 < ranges.length; i++) {
+    const [, end] = ranges[i]!;
+    const [nextStart] = ranges[i + 1]!;
+    // At (or just before) the end of a range, or inside the hole after it.
+    if (currentTime >= end - HOLE_EPSILON_SEC && currentTime < nextStart) {
+      return nextStart + 0.01;
+    }
+  }
+  return null;
+}
+
+/** How close to the end of a buffered range counts as standing at its hole. */
+export const HOLE_EPSILON_SEC = 0.15;
+
+/**
  * The range of old video to remove from the buffer, or `null` when there is
  * not enough of it yet.
  */

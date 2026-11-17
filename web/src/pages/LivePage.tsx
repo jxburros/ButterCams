@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { RefObject, TouchEvent } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, errorMessage } from '../api/client';
 import type { Camera, CameraState, LiveViewsResponse, StreamKind } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
@@ -239,7 +239,27 @@ export function LivePage() {
   const system = useLoad(api.system, 30000);
   const saved = useLoad(api.liveViews);
   const [prefs, setPrefs] = useState(loadPrefs);
-  const [mode, setMode] = useState<Mode>({ kind: 'grid' });
+  const [localMode, setLocalMode] = useState<Mode>({ kind: 'grid' });
+  // Single view lives in the address (?camera=…), so the browser's or the
+  // phone's Back returns to the grid and a reload keeps the camera open.
+  const [params, setParams] = useSearchParams();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const singleId = params.get('camera');
+  const mode: Mode = singleId ? { kind: 'single', cameraId: singleId } : localMode.kind === 'single' ? { kind: 'grid' } : localMode;
+  const setMode = (next: Mode) => {
+    const fromGrid = (location.state as { liveSingle?: boolean } | null)?.liveSingle === true;
+    if (next.kind === 'single') {
+      if (singleId) setParams({ camera: next.cameraId }, { replace: true, state: location.state });
+      else setParams({ camera: next.cameraId }, { state: { liveSingle: true } });
+      return;
+    }
+    setLocalMode(next);
+    if (singleId) {
+      if (fromGrid) navigate(-1); // the same as the browser's Back
+      else setParams({}, { replace: true });
+    }
+  };
   const [page, setPage] = useState(0);
   const [layoutOverride, setLayoutOverride] = useState<Record<string, TileLayout>>({});
   const [saving, setSaving] = useState(false);
@@ -678,7 +698,9 @@ function SingleView({
   const [muted, setMuted] = useState(true);
   const state = tileState(camera);
   const problem = problemText(camera, state);
-  const hasAudio = (camera.stats?.audioCodec ?? '') !== '';
+  // From the stream itself: a sub stream, or a camera whose audio is not
+  // recorded, has no sound even when the recording does.
+  const hasAudio = stream.status.kind === 'playing' && stream.status.audio;
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.muted = muted;
@@ -700,7 +722,9 @@ function SingleView({
     ? null
     : (stream.message ??
       problem ??
-      (live ? 'Connecting to live video…' : 'Recording now. Live view is switched off; open the recordings to watch.'));
+      (live
+        ? 'Connecting to live video…'
+        : 'Recording now. Live view and playback are switched off; recordings can be downloaded on the Recordings page.'));
 
   return (
     <section className="single" aria-labelledby="single-heading">

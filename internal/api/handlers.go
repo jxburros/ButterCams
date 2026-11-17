@@ -380,6 +380,7 @@ func (s *Server) handleCameraUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cam, _ := cfg.Camera(id)
+	s.audit(r, "camera_changed", "Camera "+cam.Name+" was changed.", cam.ID)
 	writeJSON(w, http.StatusOK, toCameraView(cam, s.backend.CameraStats()))
 }
 
@@ -759,6 +760,7 @@ func (s *Server) handleDestinationUpdate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	d, _ := cfg.Destination(id)
+	s.audit(r, "destination_changed", "Destination "+d.Name+" was changed.", "")
 	statuses, _ := s.backend.Storage()
 	writeJSON(w, http.StatusOK, toDestinationView(d, statuses))
 }

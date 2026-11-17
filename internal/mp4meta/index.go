@@ -7,6 +7,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 )
 
 // This file holds what playback needs from a recording (spec 16.5): the list
@@ -176,15 +178,73 @@ func parseTracks(moov []byte, ix *Index) {
 }
 
 // hevcCodecString builds "hvc1.1.6.L93.B0" from an hvcC box (ISO/IEC
-// 14496-15, annex E).
+// 14496-15, annex E). The profile, tier, level and constraints are read from
+// the SPS the box carries: some writers copy the box's own copy of them from
+// the SPS without removing its emulation-prevention bytes, which gives
+// strings browsers do not know.
 func hevcCodecString(fourcc string, c []byte) string {
+	if sps := hvccSPS(c); sps != nil {
+		if s := HEVCCodecString(fourcc, sps); s != "" {
+			return s
+		}
+	}
 	if len(c) < 13 {
 		return ""
 	}
-	space := c[1] >> 6
-	tier := (c[1] >> 5) & 1
-	profile := c[1] & 0x1F
-	compat := binary.BigEndian.Uint32(c[2:])
+	return hevcString(fourcc, c[1:13])
+}
+
+// hvccSPS returns the first SPS in an hvcC box's parameter set arrays.
+func hvccSPS(c []byte) []byte {
+	if len(c) < 23 {
+		return nil
+	}
+	n := int(c[22])
+	p := c[23:]
+	for i := 0; i < n; i++ {
+		if len(p) < 3 {
+			return nil
+		}
+		typ := p[0] & 0x3F
+		count := int(binary.BigEndian.Uint16(p[1:]))
+		p = p[3:]
+		for j := 0; j < count; j++ {
+			if len(p) < 2 {
+				return nil
+			}
+			l := int(binary.BigEndian.Uint16(p))
+			if len(p) < 2+l {
+				return nil
+			}
+			if typ == 33 {
+				return p[2 : 2+l]
+			}
+			p = p[2+l:]
+		}
+	}
+	return nil
+}
+
+// HEVCCodecString builds the codec string of an H.265 stream from its SPS
+// (NAL unit as sent, with emulation-prevention bytes), with the given sample
+// entry name ("hvc1"). It returns "" for an SPS too short to read.
+func HEVCCodecString(fourcc string, sps []byte) string {
+	raw := h264.EmulationPreventionRemove(sps)
+	// 2 bytes NAL header, 1 byte ids, then profile_tier_level: 12 bytes.
+	if len(raw) < 15 {
+		return ""
+	}
+	return hevcString(fourcc, raw[3:15])
+}
+
+// hevcString formats the 12 bytes of general_profile_tier_level: profile
+// space and profile, the compatibility flags in reverse bit order, tier and
+// level, then the constraint bytes without trailing zeros.
+func hevcString(fourcc string, ptl []byte) string {
+	space := ptl[0] >> 6
+	tier := (ptl[0] >> 5) & 1
+	profile := ptl[0] & 0x1F
+	compat := binary.BigEndian.Uint32(ptl[1:5])
 	var rev uint32 // the compatibility flags are written in reverse bit order
 	for i := 0; i < 32; i++ {
 		rev = rev<<1 | (compat>>i)&1
@@ -201,8 +261,8 @@ func hevcCodecString(fourcc string, c []byte) string {
 	} else {
 		b.WriteByte('H')
 	}
-	fmt.Fprintf(&b, "%d", c[12])
-	constraints := c[6:12]
+	fmt.Fprintf(&b, "%d", ptl[11])
+	constraints := ptl[5:11]
 	n := len(constraints)
 	for n > 0 && constraints[n-1] == 0 {
 		n--

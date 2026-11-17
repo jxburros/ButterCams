@@ -5,14 +5,15 @@
 
 import { api } from '../api/client';
 import type { StreamKind } from '../api/types';
-import { backoffDelay, liveEdgeAction, parseLiveMessage, probeUrl, trimRange } from './liveLogic';
+import { backoffDelay, holeSkip, liveEdgeAction, parseLiveMessage, probeUrl, trimRange } from './liveLogic';
 import type { AttachedSource } from './mse';
 import { NO_MSE_MESSAGE, attachMediaSource, isTypeSupported, mseAvailable } from './mse';
 
 export type LiveStatus =
   | { kind: 'idle' }
   | { kind: 'connecting' }
-  | { kind: 'playing' }
+  /** `audio`: the stream carries sound (from its init message). */
+  | { kind: 'playing'; audio: boolean }
   /** The server has no video for this camera right now (offline, connecting …). */
   | { kind: 'waiting'; message: string }
   /** The browser cannot play this stream's codec; the player has stopped. */
@@ -59,6 +60,8 @@ export class LivePlayer {
   private queueBytes = 0;
   private streaming = true; // ManagedMediaSource: false between endstreaming and startstreaming
   private attempt = 0;
+  /** The MIME type of the stream being played. */
+  private mime = '';
   /** When the current connection started playing; 0 while it has not. */
   private playingSince = 0;
   private retryTimer: number | null = null;
@@ -242,6 +245,7 @@ export class LivePlayer {
 
   /** Every `init` starts a fresh media source: the next binary message is its header. */
   private beginSource(mime: string): void {
+    this.mime = mime;
     this.releaseSource();
     const attached = attachMediaSource(this.video);
     if (attached === null) {
@@ -354,10 +358,17 @@ export class LivePlayer {
     const start = ranges.start(0);
     const end = ranges.end(ranges.length - 1);
 
+    const list: Array<[number, number]> = [];
+    for (let i = 0; i < ranges.length; i++) list.push([ranges.start(i), ranges.end(i)]);
+    const skipTo = holeSkip(list, video.currentTime);
     // Playback that fell out of the buffer (a trimmed range, a gap after a
     // stall) continues at the live edge.
     if (video.currentTime < start || video.currentTime > end + 0.5) {
       video.currentTime = Math.max(start, end - 0.2);
+    } else if (skipTo !== null) {
+      // A hole between two buffered ranges: the browser would wait there
+      // until the "too far behind" jump, a visible freeze of seconds.
+      video.currentTime = skipTo;
     } else {
       const action = liveEdgeAction(video.currentTime, end, video.playbackRate);
       if (action.kind === 'seek') {
@@ -370,7 +381,7 @@ export class LivePlayer {
     if (video.paused) void video.play().catch(() => undefined);
 
     if (video.currentTime > this.lastTime && this.lastTime >= 0 && video.readyState >= 2) {
-      this.setStatus({ kind: 'playing' });
+      this.setStatus({ kind: 'playing', audio: /mp4a|opus/i.test(this.mime) });
     }
     this.lastTime = video.currentTime;
 
