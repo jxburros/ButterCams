@@ -69,6 +69,39 @@ func (e Env) validLocalPath(p string) bool {
 	return strings.HasPrefix(p, "/")
 }
 
+// pathKey returns a path in a form where two spellings of the same folder
+// compare equal: one separator, no trailing separator, and on Windows no
+// case.
+func (e Env) pathKey(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	if e.windows() || IsUNC(p) {
+		p = strings.ToLower(strings.ReplaceAll(p, "/", "\\"))
+		for strings.HasSuffix(p, "\\") && len(p) > 3 && !strings.HasSuffix(p, ":\\") {
+			p = strings.TrimSuffix(p, "\\")
+		}
+		return p
+	}
+	for strings.HasSuffix(p, "/") && len(p) > 1 {
+		p = strings.TrimSuffix(p, "/")
+	}
+	return p
+}
+
+// pathWithin reports whether path a is b or inside b (both from pathKey).
+func pathWithin(a, b string) bool {
+	if a == b {
+		return true
+	}
+	sep := "/"
+	if strings.Contains(b, "\\") {
+		sep = "\\"
+	}
+	return strings.HasPrefix(a, strings.TrimSuffix(b, sep)+sep)
+}
+
 func (e Env) remoteDrive(p string) bool {
 	return e.IsRemoteDrive != nil && winDriveRe.MatchString(p) && e.IsRemoteDrive(p)
 }
@@ -127,6 +160,29 @@ func Validate(c *Config, env Env) error {
 			ve.add(f("id"), "Another destination already uses the id %q.", d.ID)
 		}
 		destIDs[d.ID] = true
+	}
+
+	// Two places that are the same folder, or one inside the other, would
+	// count one file as two copies: retention on one deletes the only copy
+	// while the index still lists the other.
+	stagingKey := env.pathKey(c.Staging.Path)
+	keys := make([]string, len(c.Destinations))
+	for i, d := range c.Destinations {
+		keys[i] = env.pathKey(d.Path)
+		if keys[i] == "" {
+			continue
+		}
+		f := fmt.Sprintf("destinations[%d].path", i)
+		if stagingKey != "" && (pathWithin(keys[i], stagingKey) || pathWithin(stagingKey, keys[i])) {
+			ve.add(f, "A destination cannot be the staging folder, or inside it or around it.")
+			continue
+		}
+		for j := 0; j < i; j++ {
+			if keys[j] != "" && (pathWithin(keys[i], keys[j]) || pathWithin(keys[j], keys[i])) {
+				ve.add(f, "This folder is the same as, or inside, the folder of destination %q. Each destination needs its own folder.", c.Destinations[j].Name)
+				break
+			}
+		}
 	}
 
 	// cameras

@@ -14,6 +14,10 @@ import (
 	"github.com/jxburros/buttercams/internal/winsvc"
 )
 
+// dispatchQueue is how many messages from one child may wait for the
+// guardian to handle them.
+const dispatchQueue = 4096
+
 // Supervision timing (spec 9).
 const (
 	// RestartDelay is the pause before a crashed child is started again; a
@@ -74,7 +78,10 @@ type Proc struct {
 	startedAt atomic.Int64
 	crashLoop atomic.Bool
 	running   atomic.Bool
-	done      chan struct{}
+	// backlogged is true while the stdout reader waits for the guardian to
+	// handle earlier messages.
+	backlogged atomic.Bool
+	done       chan struct{}
 }
 
 func newProc(spec ProcSpec, log *slog.Logger, logw func([]byte)) *Proc {
@@ -99,6 +106,9 @@ func (p *Proc) Unresponsive(now time.Time) bool {
 	}
 	if !p.running.Load() {
 		return now.Sub(time.Unix(0, p.downSince.Load())) > limit
+	}
+	if p.backlogged.Load() {
+		return false // the guardian is behind on its messages, not the child
 	}
 	return now.Sub(p.LastHeartbeat()) > limit
 }
@@ -255,13 +265,20 @@ func (p *Proc) runOnce() string {
 		}
 	}()
 
+	// stdout is read by one goroutine that only notes that the child is
+	// alive and hands each message to a second goroutine, which runs
+	// OnMessage (database writes, often). A slow database therefore never
+	// stops the pipe from being read: the child never blocks writing to it,
+	// and its heartbeats keep arriving (spec rule 1).
+	msgs := make(chan any, dispatchQueue)
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() { // stdout: messages
 		defer wg.Done()
+		defer close(msgs)
 		defer func() {
 			if r := recover(); r != nil {
-				p.log.Error("handling a child message panicked", "panic", fmt.Sprint(r))
+				p.log.Error("reading child messages panicked", "panic", fmt.Sprint(r))
 			}
 		}()
 		r := ipc.NewReader(stdout)
@@ -274,15 +291,30 @@ func (p *Proc) runOnce() string {
 			if err != nil {
 				return // end of output: the child exited or closed its pipe
 			}
+			p.lastBeat.Store(time.Now().UnixNano()) // any message proves life
 			if hb, ok := msg.(*ipc.Heartbeat); ok {
-				p.lastBeat.Store(time.Now().UnixNano())
 				p.memBytes.Store(hb.MemBytes)
 				continue
 			}
-			p.lastBeat.Store(time.Now().UnixNano()) // any message proves life
-			if p.spec.OnMessage != nil {
-				p.handle(msg)
+			if p.spec.OnMessage == nil {
+				continue
 			}
+			select {
+			case msgs <- msg:
+			default:
+				// The guardian is behind, not the child: while this waits,
+				// the heartbeat check must not blame the child.
+				p.backlogged.Store(true)
+				msgs <- msg
+				p.backlogged.Store(false)
+				p.lastBeat.Store(time.Now().UnixNano())
+			}
+		}
+	}()
+	go func() { // message handling, in order
+		defer wg.Done()
+		for msg := range msgs {
+			p.handle(msg)
 		}
 	}()
 	go func() { // stderr: the child's log lines
@@ -333,7 +365,7 @@ loop:
 			}
 			break loop
 		case <-ticker.C:
-			if p.spec.HeartbeatTimeout > 0 && time.Since(p.LastHeartbeat()) > p.spec.HeartbeatTimeout {
+			if p.spec.HeartbeatTimeout > 0 && !p.backlogged.Load() && time.Since(p.LastHeartbeat()) > p.spec.HeartbeatTimeout {
 				p.kill(fmt.Sprintf("no heartbeat for %s", p.spec.HeartbeatTimeout))
 			}
 		}

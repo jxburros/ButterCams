@@ -162,8 +162,9 @@ func (g *Guardian) applyChanges(old, next *config.Config, ch config.Changes) {
 // PurgeCamera deletes every indexed recording of a camera that was deleted
 // with "keep recordings" switched off. Only files in the index are touched.
 func (g *Guardian) PurgeCamera(cameraID string) {
+	at := time.Now()
 	g.mu.Lock()
-	g.purged[cameraID] = time.Now()
+	g.purged[cameraID] = at
 	g.mu.Unlock()
 	g.wg.Add(1)
 	go func() {
@@ -185,7 +186,9 @@ func (g *Guardian) PurgeCamera(cameraID string) {
 			}
 			byDest := map[string][]ipc.DeleteItem{}
 			for _, s := range segs {
-				if !s.Closed() {
+				// A camera added again under the same id meanwhile keeps
+				// what it recorded after the deletion.
+				if !s.Closed() || !s.Start.Before(at) {
 					continue
 				}
 				for _, c := range s.Copies {

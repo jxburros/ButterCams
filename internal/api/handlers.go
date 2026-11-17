@@ -862,7 +862,7 @@ func (s *Server) handleRecordingCameras(w http.ResponseWriter, r *http.Request) 
 			out = append(out, item{ID: c.ID, Name: c.Name})
 		}
 	}
-	if rows, err := s.backend.Index().Cameras(); err == nil {
+	if rows, err := s.backend.Index().CamerasWithRecordings(); err == nil {
 		for _, row := range rows {
 			if !seen[row.ID] && sc.Allows(row.ID) {
 				out = append(out, item{ID: row.ID, Name: row.Name, Deleted: true})

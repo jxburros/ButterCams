@@ -228,6 +228,30 @@ func (d *DB) Cameras() ([]CameraRow, error) {
 	return out, rows.Err()
 }
 
+// CamerasWithRecordings returns the cameras that still have at least one
+// recording with a copy that is not deleted.
+func (d *DB) CamerasWithRecordings() ([]CameraRow, error) {
+	rows, err := d.r.Query(`SELECT c.id, c.name, COALESCE(c.last_state, ''), c.last_state_ts FROM cameras c
+		WHERE EXISTS (SELECT 1 FROM segments s JOIN copies cp ON cp.segment_id = s.id
+		              WHERE s.camera_id = c.id AND cp.state <> 'deleted')
+		ORDER BY c.name, c.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CameraRow
+	for rows.Next() {
+		var c CameraRow
+		var ts sql.NullString
+		if err := rows.Scan(&c.ID, &c.Name, &c.LastState, &ts); err != nil {
+			return nil, err
+		}
+		c.LastStateTS = parseTime(ts)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // ----------------------------------------------------------------- segments
 
 // Copy is one row of the copies table.
@@ -651,7 +675,9 @@ func (d *DB) Usage(destinationID string) (bytes int64, files int, err error) {
 func (d *DB) Queue(destinationID string) (n int, oldest time.Time, err error) {
 	var ts sql.NullString
 	err = d.r.QueryRow(`SELECT COUNT(*), MIN(s.end_ts) FROM copies c JOIN segments s ON s.id = c.segment_id
-		WHERE c.destination_id = ? AND c.state IN ('queued', 'copying', 'failed')`, destinationID).Scan(&n, &ts)
+		WHERE c.destination_id = ? AND c.state IN ('queued', 'copying', 'failed')
+		  AND EXISTS (SELECT 1 FROM copies st WHERE st.segment_id = s.id AND st.destination_id = 'staging' AND st.state = 'verified')`,
+		destinationID).Scan(&n, &ts)
 	return n, parseTime(ts), err
 }
 

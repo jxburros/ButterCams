@@ -110,7 +110,7 @@ type Guardian struct {
 	staging     destLive
 	oldStaging  []string
 	purged      map[string]time.Time
-	pendingDel  map[string]map[int64]bool // deletes sent to the mover, by destination
+	pendingDel  map[string]map[int64]int64 // deletes sent to the mover (bytes), by destination
 	mover       *Proc
 	media       mediaState
 	health      api.Health
@@ -136,7 +136,7 @@ func New(opts Options) *Guardian {
 		cams:       map[string]*camLive{},
 		dests:      map[string]*destLive{},
 		purged:     map[string]time.Time{},
-		pendingDel: map[string]map[int64]bool{},
+		pendingDel: map[string]map[int64]int64{},
 		ready:      make(chan struct{}),
 		media:      mediaState{restreamToken: newToken(), restreams: map[int]int{}, shares: map[string]time.Time{}},
 	}

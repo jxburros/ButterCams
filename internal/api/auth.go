@@ -567,6 +567,16 @@ func (s *sessions) get(token string) (session, bool) {
 	return *sess, true
 }
 
+// alive reports whether a session still exists and has not idled out,
+// without counting as use. Long-lived responses (the event stream, live
+// video) check it so they end when the session ends.
+func (s *sessions) alive(token string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess := s.m[token]
+	return sess != nil && s.now().Sub(sess.lastSeen) <= SessionIdleTimeout
+}
+
 func (s *sessions) reissued(token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

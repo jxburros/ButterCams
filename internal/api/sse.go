@@ -192,10 +192,18 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 
 	keepAlive := time.NewTicker(25 * time.Second)
 	defer keepAlive.Stop()
+	check := time.NewTicker(5 * time.Second)
+	defer check.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-check.C:
+			// Signing out, a deleted account or an expired session ends the
+			// stream: it must not keep delivering after that.
+			if !s.sessions.alive(sess.token) {
+				return
+			}
 		case f, open := <-ch:
 			if !open {
 				return

@@ -170,7 +170,7 @@ func runRebuildIndex(args []string) error {
 	}
 	fmt.Println("Scanning staging and", len(cfg.Destinations), "destination(s) ...")
 	last := 0
-	out, err := db.Rebuild(context.Background(), guardian.Roots(cfg, nil), guardian.WantDest(cfg), func(n int) {
+	out, err := db.Rebuild(context.Background(), guardian.Roots(cfg, guardian.OldStagingPaths(db)), guardian.WantDest(cfg), func(n int) {
 		if n-last >= 500 {
 			last = n
 			fmt.Printf("  %d files\n", n)

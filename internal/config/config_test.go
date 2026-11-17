@@ -436,3 +436,27 @@ func TestDiffLive(t *testing.T) {
 		t.Fatalf("enabled change not reported: %+v", ch)
 	}
 }
+
+func TestOverlappingStoragePathsRejected(t *testing.T) {
+	c := Default(`D:\ButterCams\staging`)
+	c.Destinations = []Destination{
+		{ID: "a", Name: "A", Type: DestLocal, Path: `E:\Recordings`, CapGB: 10, Enabled: true},
+		{ID: "b", Name: "B", Type: DestLocal, Path: `e:/recordings\`, CapGB: 10, Enabled: true},
+		{ID: "c", Name: "C", Type: DestLocal, Path: `E:\Recordings\more`, CapGB: 10, Enabled: true},
+		{ID: "d", Name: "D", Type: DestLocal, Path: `D:\ButterCams\staging\copies`, CapGB: 10, Enabled: true},
+		{ID: "e", Name: "E", Type: DestLocal, Path: `E:\Recordings2`, CapGB: 10, Enabled: true},
+		{ID: "f", Name: "F", Type: DestUNC, Path: `\\nas\cams`, CapGB: 10, Enabled: true},
+	}
+	c.Normalize()
+	f := fieldsOf(t, Validate(c, winEnv))
+	for _, k := range []string{"destinations[1].path", "destinations[2].path", "destinations[3].path"} {
+		if f[k] == "" {
+			t.Errorf("%s not reported: %v", k, f)
+		}
+	}
+	for _, k := range []string{"destinations[0].path", "destinations[4].path", "destinations[5].path"} {
+		if f[k] != "" {
+			t.Errorf("%s wrongly reported: %s", k, f[k])
+		}
+	}
+}

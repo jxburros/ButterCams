@@ -641,8 +641,11 @@ func (c *Camera) handleSample(u stream.Sample) (outcome, string, bool) {
 	case u.Key:
 		// Check the clock here as well as in tick, so a jump across the hour
 		// is recorded as a clock change and not as an ordinary rollover.
-		if c.clockJumped(u.Recv) {
-			c.onClockJump(u.Recv)
+		// The wall clock is read now, not taken from the packet: a packet
+		// that waited in the queue (a slow disk) would otherwise look like
+		// a clock step, since the monotonic side is always "now".
+		if wall := c.w.now(); c.clockJumped(wall) {
+			c.onClockJump(wall)
 		}
 		reason := ""
 		switch {
@@ -753,7 +756,7 @@ func (c *Camera) closeSegment(reason string) {
 	cs, err := seg.close(reason)
 	if err != nil {
 		c.log.Error("closing the recording failed; repairing it", "file", seg.partPath, "error", err.Error())
-		c.repairPart(seg.partPath)
+		c.repairPartAsync(seg.partPath)
 		return
 	}
 	c.w.send(&ipc.SegmentClosed{
@@ -799,7 +802,7 @@ func (c *Camera) abortAll() {
 		seg := c.seg
 		c.seg = nil
 		seg.abort()
-		c.repairPart(seg.partPath)
+		c.repairPartAsync(seg.partPath)
 	}
 	c.closeSessions()
 }
@@ -1004,6 +1007,19 @@ func (c *Camera) recoverParts() {
 		for _, p := range mine {
 			c.repairPart(p)
 		}
+	}()
+}
+
+// repairPartAsync repairs a file beside the recording: the repair re-reads
+// the whole file to hash it, which must never hold up the next file.
+func (c *Camera) repairPartAsync(part string) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				c.log.Error("repairing a recording panicked", "file", part, "panic", fmt.Sprint(r))
+			}
+		}()
+		c.repairPart(part)
 	}()
 }
 
