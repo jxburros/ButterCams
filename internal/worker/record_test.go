@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"math"
 	"os"
 	"path/filepath"
@@ -124,6 +125,17 @@ func TestRecordH265NoAudio(t *testing.T) {
 	p := ffprobe(t, c.Path)
 	if p.codec("video") != "hevc" || p.codec("audio") != "" {
 		t.Fatalf("ffprobe sees %q/%q", p.codec("video"), p.codec("audio"))
+	}
+	// Safari only plays H.265 stored with the hvc1 sample entry (spec 16.5).
+	head := make([]byte, 4096)
+	f, err := os.Open(c.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, _ := f.Read(head)
+	f.Close()
+	if !bytes.Contains(head[:n], []byte("hvc1")) || bytes.Contains(head[:n], []byte("hev1")) {
+		t.Fatal("the H.265 sample entry is not hvc1")
 	}
 }
 

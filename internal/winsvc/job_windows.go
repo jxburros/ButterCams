@@ -67,3 +67,13 @@ func PrepareChild(cmd *exec.Cmd) {
 		CreationFlags: windows.CREATE_NO_WINDOW | windows.CREATE_NEW_PROCESS_GROUP,
 	}
 }
+
+// BelowNormalPriority makes a child prepared with PrepareChild start at
+// below-normal process priority, so that it gives way to the recorders when
+// the CPU is busy (spec 16.2).
+func BelowNormalPriority(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.CreationFlags |= windows.BELOW_NORMAL_PRIORITY_CLASS
+}

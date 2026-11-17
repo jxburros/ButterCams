@@ -18,13 +18,18 @@ import type {
   EventsResponse,
   FieldError,
   Health,
+  LiveView,
+  LiveViewsResponse,
   LoginRequest,
+  PlayIndex,
   RebuildStarted,
   RecordingCamerasResponse,
   SegmentsResponse,
   Session,
+  StreamKind,
   SystemInfo,
   SystemUpdate,
+  TimelineResponse,
   UserCreate,
   UserUpdate,
   UsersResponse,
@@ -199,7 +204,13 @@ function tidySystem(system: SystemInfo): SystemInfo {
     ...system,
     server: { ...system.server, allowedSubnets: list(system.server.allowedSubnets) },
     certificate: tidyCertificate(system.certificate),
+    media: { ...system.media, sources: list(system.media?.sources) },
   };
+}
+
+function tidyViews(response: LiveViewsResponse): LiveViewsResponse {
+  const tidy = (views: LiveView[] | null) => list(views).map((view) => ({ ...view, cameraIds: list(view.cameraIds) }));
+  return { shared: tidy(response.shared), mine: tidy(response.mine) };
 }
 
 export const api = {
@@ -225,7 +236,11 @@ export const api = {
     request<void>('DELETE', `/cameras/${seg(id)}${query({ keepRecordings })}`),
   testCamera: async (body: CameraInput): Promise<CameraTestResult> => {
     const result = await request<CameraTestResult>('POST', '/cameras/test', { body });
-    return { ...result, warnings: list(result.warnings) };
+    return {
+      ...result,
+      warnings: list(result.warnings),
+      sub: result.sub ? { ...result.sub, warnings: list(result.sub.warnings) } : null,
+    };
   },
   importCameras: async (body: CameraImportRequest): Promise<CameraImportResponse> => {
     const response = await request<CameraImportResponse>('POST', '/cameras/import', { body });
@@ -258,6 +273,38 @@ export const api = {
   },
   /** For a plain `<a href download>`; the session cookie authorises it. */
   segmentDownloadUrl: (id: number) => `${BASE}/segments/${id}/download`,
+
+  // Timeline and playback (spec 16.5)
+  timeline: async (camera: string, from: Date, to: Date): Promise<TimelineResponse> => {
+    const response = await request<TimelineResponse>(
+      'GET',
+      `/timeline${query({ camera, from: from.toISOString(), to: to.toISOString() })}`,
+    );
+    return { ...response, segments: list(response.segments), events: list(response.events) };
+  },
+  playIndex: async (id: number): Promise<PlayIndex> => {
+    const index = await request<PlayIndex>('GET', `/segments/${id}/play/index`);
+    return { ...index, chunks: list(index.chunks) };
+  },
+  /** Fetch with a `Range: bytes=a-b` header; the session cookie authorises it. */
+  playDataUrl: (id: number) => `${BASE}/segments/${id}/play/data`,
+  /** Keyframe-only fragments between two times (milliseconds from the start of the file). */
+  playKeyframesUrl: (id: number, fromMs: number, toMs: number) =>
+    `${BASE}/segments/${id}/play/keyframes${query({ from: Math.floor(fromMs), to: Math.ceil(toMs) })}`,
+  /** A complete small MP4 holding the keyframe at or before a time; usable as `<video src>`. */
+  playThumbUrl: (id: number, tMs: number) => `${BASE}/segments/${id}/play/thumb${query({ t: Math.floor(tMs) })}`,
+
+  // Live view (spec 16.4)
+  /** WebSocket URL of a camera's live stream. */
+  liveUrl: (camera: string, stream: StreamKind, audio: boolean): string => {
+    const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${scheme}//${window.location.host}${BASE}/live/${seg(camera)}/${stream}?audio=${audio ? 1 : 0}`;
+  },
+  liveViews: async (): Promise<LiveViewsResponse> => tidyViews(await request<LiveViewsResponse>('GET', '/live/views')),
+  saveMyViews: async (views: LiveView[]): Promise<LiveViewsResponse> =>
+    tidyViews(await request<LiveViewsResponse>('PUT', '/live/views/mine', { body: { views } })),
+  saveSharedViews: async (views: LiveView[]): Promise<LiveViewsResponse> =>
+    tidyViews(await request<LiveViewsResponse>('PUT', '/live/views/shared', { body: { views } })),
 
   // Events
   events: async (params: EventsQuery): Promise<EventsResponse> => {

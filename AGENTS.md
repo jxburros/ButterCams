@@ -17,8 +17,9 @@ Then read:
   `main` must advance the version** in `release.json` and add its section to
   `CHANGELOG.md` (the `bump` command there does both); the "Release
   versions" check fails otherwise.
-- `docs/V2_PLAN.md` – the build plan for the next version, live view and
-  timeline playback (spec section 16): order of work, code changes, tests.
+- `docs/V2_PLAN.md` – how v2, live view and timeline playback (spec section
+  16), was built: order of work, code changes, tests. Its section 6 says
+  what is done and what still has to be proven on the target server.
 
 ## Layout
 
@@ -27,12 +28,15 @@ Then read:
 | `cmd/buttercams` | Sub-command dispatch and the `setup` helpers the installer calls |
 | `internal/guardian` | The service: supervision, camera assignment, index owner, retention decisions, health |
 | `internal/worker` | Recorder: camera state machine, RTSP sessions, fMP4 writer, hourly rollover |
+| `internal/stream` | Shared by the recorder and the media process: packet fan-out, RTP → samples, the MP4 header |
+| `internal/restream` | The loopback RTSP server inside each worker that offers main streams to the media process |
+| `internal/media` | The media process: stream hub, live muxer and WebSocket, playback file server |
 | `internal/mover` | Copy with verification, retention selection, deletes |
-| `internal/api` | HTTPS server, accounts, handlers, event stream |
+| `internal/api` | HTTPS server, accounts and camera limits, handlers, event stream, reverse proxy to the media process |
 | `internal/config`, `internal/index`, `internal/ipc` | config.json, SQLite index, JSON-lines messages |
 | `internal/audio`, `internal/mp4meta`, `internal/naming`, `internal/logx` | G.711/G.726 → AAC, MP4 metadata and repair, file naming, logging |
 | `internal/winsvc` | Everything Windows-specific, with stand-ins for other systems |
-| `web` | React + Vite settings page, embedded in the binary |
+| `web` | React + Vite pages (settings, Live, timeline) and the MSE players in `web/src/player`, embedded in the binary |
 | `test/simulator`, `test/chaos` | Camera simulator and chaos script |
 | `installer` | Inno Setup script, build script and the service smoke test |
 | `release.json`, `.release`, `CHANGELOG.md` | Version, release configuration and release notes |
@@ -43,7 +47,8 @@ Then read:
 cd web && npm ci && npm run build && cd ..   # once, and after UI changes
 gofmt -l cmd internal test                   # must print nothing
 go vet ./... && GOOS=windows go vet ./...    # both must pass
-go test ./...                                # unit + integration tests (about two minutes)
+go test ./...                                # unit + integration tests (a few minutes)
+cd web && npm test                           # unit tests of the players
 ```
 
 - The target is Windows, but the code builds and the tests run on Linux and
@@ -59,7 +64,12 @@ go test ./...                                # unit + integration tests (about t
   worker.
 - Retention and cleanup may only touch files that are in the index and whose
   names match `internal/naming`.
-- v2 (spec section 16) is the next phase; build it in the order of
-  `docs/V2_PLAN.md`. Its rules for protecting the recorder are in 16.9.
+- v2 (spec section 16) is built. Its rules for protecting the recorder are
+  in 16.9 and still bind every change: all viewer work stays in the media
+  process, the restream is the only v2 code in a worker, files are opened
+  with `winsvc.OpenShared`, and the guardian only forwards.
+- Every API route declares a `CameraRule` (`internal/api/server.go`); a
+  route that names a camera must also be added to the table in
+  `TestLimitedViewerIsFencedIn`.
 - v3 and v4 (spec sections 17–18) are built on the hooks of section 15 and
   on v2. Do not start them without being asked.

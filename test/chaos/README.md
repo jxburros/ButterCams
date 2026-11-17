@@ -17,6 +17,9 @@ go run ./test/simulator/cmd/camsim --count 60 --pad 33000 --audio pcmu --listen 
 | `block-share` | Blocks SMB to the share host | Recording uninterrupted; destination `retrying`; backlog copies when unblocked |
 | `fill-staging` | Fills the staging drive | Oldest staging files deleted; Critical raised; recording continues |
 | `clock-jump` | Moves the system clock | New files named for the corrected time; no crash |
+| `kill-media` | Kills the live view process | Back within 10 s; every file being recorded keeps growing |
+| `pin-media` | Keeps every core busy at the live view process's priority (below normal) | Every file being recorded keeps growing; no stalls in the Events page |
+| `viewers` | Opens live streams that connect and vanish at random | Same; needs `-User` and `-Password` |
 
 Examples:
 
@@ -24,7 +27,14 @@ Examples:
 .\chaos.ps1 -Rounds 50
 .\chaos.ps1 -Rounds 10 -Actions block-share -ShareHost nas01 -BlockSeconds 21600   # six hours offline
 .\chaos.ps1 -Rounds 5 -Actions fill-staging,clock-jump
+.\chaos.ps1 -Rounds 100 -Actions kill-media                                      # spec 16.11
+.\chaos.ps1 -Rounds 10 -Actions pin-media,viewers -User admin -Password "…" -PinSeconds 300
 ```
+
+`pin-media` does not make the live view process itself spin (that would need a
+hook inside ButterCams). It runs one busy loop per core at the same
+below-normal priority, which is what a pinned live view process looks like to
+the recorders.
 
 The script exits with the number of rounds that did not return to `healthy`
 in time and writes everything it did to a log file. Compare that log with the
@@ -43,3 +53,5 @@ every push (`go test ./...`):
 | Clock change | `TestClockJumpStartsNewFileAtKeyframe` |
 | Database corrupt / deleted | `TestCorruptDatabaseIsRebuiltFromDisk`, `TestIndexRebuildEquality` |
 | Config unreadable | `TestUnreadableConfigFallsBackToBackup` |
+| Live view process killed while watching | `internal/guardian` `TestMediaCrashDoesNotTouchRecording` |
+| Restream fails inside a worker | `internal/worker` restream chaos test |

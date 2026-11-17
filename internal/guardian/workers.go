@@ -53,7 +53,7 @@ func (g *Guardian) newWorkerLocked(id int) *workerState {
 		Args:             []string{"worker", "--id", strconv.Itoa(id)},
 		Env:              []string{winsvc.EnvDataRoot + "=" + g.opts.DataRoot},
 		HeartbeatTimeout: WorkerHeartbeatTimeout,
-		OnStart:          func(p *Proc) { g.sendAssign(id) },
+		OnStart:          func(p *Proc) { g.sendAssign(id); g.sendRestream(p) },
 		OnMessage:        func(p *Proc, msg any) { g.onWorkerMessage(id, msg) },
 		OnRestart:        func(p *Proc, reason string, loop bool) { g.onWorkerRestart(id, reason, loop) },
 	}, g.log, g.childLog(name))
@@ -164,6 +164,7 @@ func (g *Guardian) removeCamera(id string) {
 		return
 	}
 	if empty {
+		g.forgetRestream(wid)
 		go g.safely("stop-worker", func() { w.proc.Stop(StopGrace) })
 		return
 	}
@@ -203,6 +204,7 @@ func (g *Guardian) cameraNames(ids []string) string {
 }
 
 func (g *Guardian) onWorkerRestart(id int, reason string, loop bool) {
+	g.forgetRestream(id) // its restream is gone until the new process reports one
 	g.mu.Lock()
 	w := g.workers[id]
 	var cams []string
@@ -275,6 +277,10 @@ func (g *Guardian) onWorkerMessage(workerID int, msg any) {
 		g.indexMu.Lock()
 		defer g.indexMu.Unlock()
 		g.onSegmentClosed(m)
+	case *ipc.RestreamReady:
+		g.onRestreamReady(workerID, m)
+	case *ipc.RestreamSession:
+		g.onRestreamSession(m)
 	case *ipc.Event:
 		source := "worker:" + strconv.Itoa(workerID)
 		if m.CameraID != "" {

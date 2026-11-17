@@ -17,13 +17,18 @@ func isRemoteDrive(path string) bool { return winsvc.IsRemoteDrive(path) }
 // loses events; it never holds anything up.
 type hub struct {
 	mu     sync.Mutex
-	subs   map[chan []byte]struct{}
+	subs   map[chan []byte]string // channel → user name of the subscriber
 	closed bool
+	// restrict returns what a user may see of an event's payload, and false
+	// when it is not for them at all. It is called for limited Viewers only.
+	restrict func(username, event string, v any) (any, bool)
+	// limited reports whether a user has a camera limit.
+	limited func(username string) bool
 }
 
-func newHub() *hub { return &hub{subs: map[chan []byte]struct{}{}} }
+func newHub() *hub { return &hub{subs: map[chan []byte]string{}} }
 
-func (h *hub) subscribe() chan []byte {
+func (h *hub) subscribe(username string) chan []byte {
 	ch := make(chan []byte, 64)
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -31,7 +36,7 @@ func (h *hub) subscribe() chan []byte {
 		close(ch)
 		return ch
 	}
-	h.subs[ch] = struct{}{}
+	h.subs[ch] = username
 	return ch
 }
 
@@ -77,10 +82,38 @@ func (h *hub) publish(event string, v any) {
 		return
 	}
 	h.mu.Lock()
+	subs := make(map[chan []byte]string, len(h.subs))
+	for ch, user := range h.subs {
+		subs[ch] = user
+	}
+	h.mu.Unlock()
+	// Frames for limited Viewers are built once per user.
+	perUser := map[string][]byte{}
+	frames := map[chan []byte][]byte{}
+	for ch, user := range subs {
+		if h.limited == nil || !h.limited(user) {
+			frames[ch] = f
+			continue
+		}
+		uf, done := perUser[user]
+		if !done {
+			if rv, ok := h.restrict(user, event, v); ok {
+				uf = frame(event, rv)
+			}
+			perUser[user] = uf
+		}
+		if uf != nil {
+			frames[ch] = uf
+		}
+	}
+	h.mu.Lock()
 	defer h.mu.Unlock()
-	for ch := range h.subs {
+	for ch, fr := range frames {
+		if _, still := h.subs[ch]; !still {
+			continue // unsubscribed meanwhile; its channel is closed
+		}
 		select {
-		case ch <- f:
+		case ch <- fr:
 		default: // this client is not keeping up
 		}
 	}
@@ -95,15 +128,20 @@ func (s *Server) PublishHealth(h Health) {
 		UptimeSec: int64(time.Since(s.backend.StartedAt()).Seconds())})
 }
 
-func (s *Server) camerasLive() map[string]any {
-	type item struct {
-		ID    string     `json:"id"`
-		Stats *statsView `json:"stats"`
-	}
+type cameraLive struct {
+	ID    string     `json:"id"`
+	Stats *statsView `json:"stats"`
+}
+
+func (s *Server) camerasLive(sc Scope) map[string]any {
+	type item = cameraLive
 	stats := s.backend.CameraStats()
 	cfg := s.backend.Config()
 	out := make([]item, 0, len(cfg.Cameras))
 	for _, c := range cfg.Cameras {
+		if !sc.Allows(c.ID) {
+			continue
+		}
 		it := item{ID: c.ID}
 		if st, ok := stats[c.ID]; ok {
 			it.Stats = toStatsView(st)
@@ -119,7 +157,7 @@ func (s *Server) PublishLive() {
 	if s.hub.count() == 0 {
 		return
 	}
-	s.hub.publish("cameras", s.camerasLive())
+	s.hub.publish("cameras", s.camerasLive(AllCameras))
 	s.hub.publish("destinations", s.destinationsPayload())
 }
 
@@ -136,9 +174,15 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	ch := s.hub.subscribe()
+	sess, _ := sessionOf(r)
+	sc := s.scopeOf(r)
+	hv := s.healthView()
+	if !sc.All() {
+		hv.Health = restrictHealth(hv.Health, sc)
+	}
+	ch := s.hub.subscribe(sess.username)
 	defer s.hub.unsubscribe(ch)
-	for _, f := range [][]byte{frame("health", s.healthView()), frame("cameras", s.camerasLive()),
+	for _, f := range [][]byte{frame("health", hv), frame("cameras", s.camerasLive(sc)),
 		frame("destinations", s.destinationsPayload())} {
 		if _, err := w.Write(f); err != nil {
 			return

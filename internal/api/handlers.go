@@ -98,7 +98,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, s.healthView())
+	hv := s.healthView()
+	if sc := s.scopeOf(r); !sc.All() {
+		hv.Health = restrictHealth(hv.Health, sc)
+	}
+	writeJSON(w, http.StatusOK, hv)
 }
 
 // ------------------------------------------------------------------- cameras
@@ -197,9 +201,12 @@ func toCameraView(c config.Camera, stats map[string]CameraStats) cameraView {
 func (s *Server) handleCamerasList(w http.ResponseWriter, r *http.Request) {
 	cfg := s.backend.Config()
 	stats := s.backend.CameraStats()
+	sc := s.scopeOf(r)
 	out := make([]cameraView, 0, len(cfg.Cameras))
 	for _, c := range cfg.Cameras {
-		out = append(out, toCameraView(c, stats))
+		if sc.Allows(c.ID) {
+			out = append(out, toCameraView(c, stats))
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"cameras": out})
 }
@@ -218,6 +225,8 @@ type cameraInput struct {
 	Transport      string   `json:"transport"`
 	RecordAudio    *bool    `json:"recordAudio"`
 	DestinationIDs []string `json:"destinationIds"`
+	// SubStreamPath: absent keeps the saved value, "" removes it.
+	SubStreamPath *string `json:"subStreamPath"`
 }
 
 // apply copies the input onto a camera. prev is the saved camera when
@@ -257,6 +266,13 @@ func (in cameraInput) apply(prev *config.Camera) (config.Camera, error) {
 	}
 	if in.DestinationIDs != nil {
 		cam.DestinationIDs = in.DestinationIDs
+	}
+	if in.SubStreamPath != nil {
+		if sub := strings.TrimSpace(*in.SubStreamPath); sub == "" {
+			cam.SubStreamPath = nil
+		} else {
+			cam.SubStreamPath = &sub
+		}
 	}
 	switch {
 	case in.ClearPassword:
@@ -839,13 +855,16 @@ func (s *Server) handleRecordingCameras(w http.ResponseWriter, r *http.Request) 
 	}
 	out := []item{}
 	seen := map[string]bool{}
+	sc := s.scopeOf(r)
 	for _, c := range cfg.Cameras {
-		out = append(out, item{ID: c.ID, Name: c.Name})
 		seen[c.ID] = true
+		if sc.Allows(c.ID) {
+			out = append(out, item{ID: c.ID, Name: c.Name})
+		}
 	}
 	if rows, err := s.backend.Index().Cameras(); err == nil {
 		for _, row := range rows {
-			if !seen[row.ID] {
+			if !seen[row.ID] && sc.Allows(row.ID) {
 				out = append(out, item{ID: row.ID, Name: row.Name, Deleted: true})
 			}
 		}
@@ -905,6 +924,9 @@ func (s *Server) handleSegments(w http.ResponseWriter, r *http.Request) {
 		s.writeFail(w, FieldErr("camera", "Choose a camera."))
 		return
 	}
+	if !s.cameraAllowed(w, r, cam) {
+		return
+	}
 	if _, err := time.Parse("2006-01-02", date); err != nil {
 		s.writeFail(w, FieldErr("date", "Choose a date (YYYY-MM-DD)."))
 		return
@@ -927,6 +949,9 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", "No such recording.")
+		return
+	}
+	if _, ok := s.segmentAllowed(w, r, id); !ok {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), HandlerTimeout)
@@ -996,6 +1021,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if v := q.Get("before"); v != "" {
 		f.Before, _ = strconv.ParseInt(v, 10, 64)
 	}
+	if sc := s.scopeOf(r); !sc.All() {
+		// A limited Viewer sees the events of their cameras only (spec 16.6).
+		if f.CameraID != "" && !sc.Allows(f.CameraID) {
+			writeError(w, http.StatusForbidden, "forbidden", noCameraAccess)
+			return
+		}
+		f.OnlyCameras = sc.IDs()
+	}
 	events, err := s.backend.Index().ListEvents(f)
 	if err != nil {
 		s.writeFail(w, err)
@@ -1048,11 +1081,20 @@ func (s *Server) systemPayload() map[string]any {
 		"counts": map[string]int{"cameras": len(cfg.Cameras), "enabledCameras": enabled,
 			"destinations": len(cfg.Destinations), "workers": s.backend.Workers()},
 		"rebuild": s.backend.Rebuild(),
+		"live":    map[string]any{"enabled": cfg.Live.Enabled, "mainStream": cfg.Live.MainStream},
+		"media":   s.backend.MediaStatus(),
 	}
 }
 
 func (s *Server) handleSystemGet(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.systemPayload())
+	out := s.systemPayload()
+	if sc := s.scopeOf(r); !sc.All() {
+		// The per-camera list of open streams is not for limited Viewers.
+		st := s.backend.MediaStatus()
+		st.Sources = []ipc.MediaSource{}
+		out["media"] = st
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) validateEnv() config.Env { return config.Env{IsRemoteDrive: isRemoteDrive} }
@@ -1073,6 +1115,10 @@ func (s *Server) handleSystemPut(w http.ResponseWriter, r *http.Request) {
 		Logging *struct {
 			RetentionDays *int `json:"retentionDays"`
 		} `json:"logging"`
+		Live *struct {
+			Enabled    *bool `json:"enabled"`
+			MainStream *bool `json:"mainStream"`
+		} `json:"live"`
 	}
 	if err := readJSON(r, &in); err != nil {
 		s.writeFail(w, err)
@@ -1125,6 +1171,14 @@ func (s *Server) handleSystemPut(w http.ResponseWriter, r *http.Request) {
 		}
 		if in.Logging != nil && in.Logging.RetentionDays != nil {
 			c.Logging.RetentionDays = *in.Logging.RetentionDays
+		}
+		if in.Live != nil {
+			if in.Live.Enabled != nil {
+				c.Live.Enabled = *in.Live.Enabled
+			}
+			if in.Live.MainStream != nil {
+				c.Live.MainStream = *in.Live.MainStream
+			}
 		}
 		return nil
 	})
@@ -1243,10 +1297,31 @@ type accountView struct {
 	Role      string    `json:"role"`
 	CreatedAt time.Time `json:"createdAt"`
 	Locked    bool      `json:"locked"`
+	// Cameras is null for "every camera", else the cameras a Viewer may see.
+	Cameras *[]string `json:"cameras"`
 }
 
 func (s *Server) accountView(u User) accountView {
-	return accountView{u.Username, u.Role, u.CreatedAt, s.users.Locked(u.Username)}
+	return accountView{u.Username, u.Role, u.CreatedAt, s.users.Locked(u.Username), u.Cameras}
+}
+
+// camerasInput reads the optional "cameras" member of a user request: absent
+// keeps the current limit, null removes it, a list sets it.
+func camerasInput(raw json.RawMessage) (set bool, cameras *[]string, err error) {
+	if len(raw) == 0 {
+		return false, nil, nil
+	}
+	if string(raw) == "null" {
+		return true, nil, nil
+	}
+	var list []string
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return false, nil, FieldErr("cameras", "Cameras must be a list of camera ids, or null for every camera.")
+	}
+	if list == nil {
+		list = []string{}
+	}
+	return true, &list, nil
 }
 
 func (s *Server) handleUsersList(w http.ResponseWriter, r *http.Request) {
@@ -1260,11 +1335,17 @@ func (s *Server) handleUsersList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Role     string `json:"role"`
+		Username string          `json:"username"`
+		Password string          `json:"password"`
+		Role     string          `json:"role"`
+		Cameras  json.RawMessage `json:"cameras"`
 	}
 	if err := readJSON(r, &in); err != nil {
+		s.writeFail(w, err)
+		return
+	}
+	setCams, cams, err := camerasInput(in.Cameras)
+	if err != nil {
 		s.writeFail(w, err)
 		return
 	}
@@ -1273,6 +1354,12 @@ func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 		s.writeFail(w, err)
 		return
 	}
+	if setCams && cams != nil {
+		if u, err = s.users.SetCameras(u.Username, cams); err != nil {
+			s.writeFail(w, err)
+			return
+		}
+	}
 	s.audit(r, "user_added", "User "+u.Username+" ("+u.Role+") was added.", "")
 	writeJSON(w, http.StatusCreated, s.accountView(u))
 }
@@ -1280,10 +1367,16 @@ func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUserUpdate(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("username")
 	var in struct {
-		Password string `json:"password"`
-		Role     string `json:"role"`
+		Password string          `json:"password"`
+		Role     string          `json:"role"`
+		Cameras  json.RawMessage `json:"cameras"`
 	}
 	if err := readJSON(r, &in); err != nil {
+		s.writeFail(w, err)
+		return
+	}
+	setCams, cams, err := camerasInput(in.Cameras)
+	if err != nil {
 		s.writeFail(w, err)
 		return
 	}
@@ -1291,6 +1384,12 @@ func (s *Server) handleUserUpdate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeFail(w, err)
 		return
+	}
+	if setCams {
+		if u, err = s.users.SetCameras(u.Username, cams); err != nil {
+			s.writeFail(w, err)
+			return
+		}
 	}
 	me, _ := sessionOf(r)
 	if in.Password != "" {

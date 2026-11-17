@@ -37,6 +37,11 @@ type fakeBackend struct {
 	rebuilt int
 	stats   map[string]CameraStats
 	boom    bool
+
+	files      map[int64]string // segment id → file, for downloads and playback
+	mediaAddr  string
+	mediaToken string
+	health     *Health
 }
 
 func (f *fakeBackend) Config() *config.Config {
@@ -64,6 +69,9 @@ func (f *fakeBackend) Health() Health {
 	if f.boom {
 		panic("handler exploded")
 	}
+	if f.health != nil {
+		return *f.health
+	}
 	return Health{Status: StatusHealthy, Reasons: []Reason{}, CheckedAt: time.Now()}
 }
 func (f *fakeBackend) CameraStats() map[string]CameraStats { return f.stats }
@@ -78,6 +86,23 @@ func (f *fakeBackend) OpenSegment(ctx context.Context, id int64) (*os.File, inde
 	}
 	file, err := os.Open(filepath.Join(f.root, seg.FileName))
 	return file, seg, err
+}
+func (f *fakeBackend) SegmentPaths(ctx context.Context, id int64) (index.Segment, []string, error) {
+	seg, err := f.db.Segment(id)
+	if err != nil {
+		return seg, nil, err
+	}
+	if p, ok := f.files[id]; ok {
+		return seg, []string{p}, nil
+	}
+	return seg, nil, os.ErrNotExist
+}
+func (f *fakeBackend) Media() (string, string, bool) {
+	return f.mediaAddr, f.mediaToken, f.mediaAddr != ""
+}
+func (f *fakeBackend) MediaStatus() MediaStatus {
+	return MediaStatus{Enabled: true, State: "running", Viewers: 2, Sources: []ipc.MediaSource{
+		{CameraID: "front-door", Stream: "sub", Viewers: 1}, {CameraID: "vault", Stream: "sub", Viewers: 1}}}
 }
 func (f *fakeBackend) PurgeCamera(id string)  { f.purged = append(f.purged, id) }
 func (f *fakeBackend) StartRebuild() error    { f.rebuilt++; return nil }

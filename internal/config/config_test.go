@@ -338,3 +338,101 @@ func TestSanitizedRemovesPasswords(t *testing.T) {
 		t.Fatalf("export still contains passwords: %s", out)
 	}
 }
+
+// A v1 file loads, is migrated to schema 2 with live view on, and is reported
+// as migrated so the guardian rewrites it (spec 16.8, V2 plan M0).
+func TestV1ConfigIsMigratedToSchema2(t *testing.T) {
+	raw := `{"schemaVersion":1,"server":{"listenAddress":"0.0.0.0","port":8650,"https":true,"allowedSubnets":[]},
+	"staging":{"path":"/var/staging","minFreePercent":10,"minFreeGB":50},"destinations":[],"cameras":[]}`
+	cfg, from, err := Parse([]byte(raw), unixEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if from != 1 || cfg.SchemaVersion != 2 {
+		t.Fatalf("migrated from %d to %d", from, cfg.SchemaVersion)
+	}
+	if !cfg.Live.Enabled || !cfg.Live.MainStream || cfg.Live.Views == nil || len(cfg.Live.Views) != 0 {
+		t.Fatalf("live section after migration: %+v", cfg.Live)
+	}
+	out, _ := json.Marshal(cfg)
+	if _, from, err := Parse(out, unixEnv); err != nil || from != 0 {
+		t.Fatalf("the migrated file does not load cleanly: from %d, %v", from, err)
+	}
+}
+
+func TestValidateLiveViews(t *testing.T) {
+	c := validWin()
+	cam := c.Cameras[0].ID
+	c.Live.Views = []View{
+		{ID: "view-a", Name: "Entrances", Layout: 4, CameraIDs: []string{cam}},
+		{ID: "view-a", Name: "", Layout: 5, CameraIDs: []string{cam, cam}},
+	}
+	f := fieldsOf(t, Validate(c, winEnv))
+	for _, field := range []string{"live.views[1].id", "live.views[1].name", "live.views[1].layout", "live.views[1].cameraIds"} {
+		if f[field] == "" {
+			t.Errorf("%s not reported: %v", field, f)
+		}
+	}
+	if f["live.views[0].id"] != "" || f["live.views[0].name"] != "" {
+		t.Errorf("a valid view was rejected: %v", f)
+	}
+
+	// A view that names a deleted camera is cleaned by Normalize, so deleting
+	// a camera can never make the configuration unsaveable.
+	c = validWin()
+	c.Live.Views = []View{{ID: "v", Name: "V", Layout: 1, CameraIDs: []string{cam, "gone"}}}
+	if f := fieldsOf(t, Validate(c, winEnv)); f["live.views[0].cameraIds"] == "" {
+		t.Fatalf("unknown camera not reported: %v", f)
+	}
+	c.Normalize()
+	if err := Validate(c, winEnv); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Live.Views[0].CameraIDs; len(got) != 1 || got[0] != cam {
+		t.Fatalf("cameras after Normalize: %v", got)
+	}
+}
+
+func TestSubStreamPath(t *testing.T) {
+	c := validWin()
+	bad := "sub stream"
+	c.Cameras[0].SubStreamPath = &bad
+	if f := fieldsOf(t, Validate(c, winEnv)); f["cameras[0].subStreamPath"] == "" {
+		t.Fatalf("bad sub stream path accepted: %v", f)
+	}
+	empty := "  "
+	c.Cameras[0].SubStreamPath = &empty
+	c.Normalize()
+	if c.Cameras[0].SubStreamPath != nil {
+		t.Fatal("an empty sub stream path must become null")
+	}
+	if _, ok := c.Cameras[0].SubURL(); ok {
+		t.Fatal("SubURL without a sub stream")
+	}
+	sub := "/Streaming/Channels/102"
+	c.Cameras[0].SubStreamPath = &sub
+	if u, ok := c.Cameras[0].SubURL(); !ok || !strings.HasSuffix(u, sub) || !strings.HasPrefix(u, "rtsp://") {
+		t.Fatalf("SubURL %q %v", u, ok)
+	}
+}
+
+// Changes to live view settings are reported on their own; a change to the
+// shared views or to a camera's sub stream restarts nothing (V2 plan M0).
+func TestDiffLive(t *testing.T) {
+	a := validWin()
+	b := a.Clone()
+	b.Live.Views = []View{{ID: "v", Name: "V", Layout: 4, CameraIDs: []string{}}}
+	if ch := Diff(a, b); !ch.Empty() {
+		t.Fatalf("saving a shared view reported changes: %+v", ch)
+	}
+	b = a.Clone()
+	b.Live.MainStream = !a.Live.MainStream
+	if ch := Diff(a, b); !ch.LiveChanged || ch.Empty() {
+		t.Fatalf("mainStream change not reported: %+v", ch)
+	}
+	b = a.Clone()
+	b.Live.Enabled = !a.Live.Enabled
+	if ch := Diff(a, b); !ch.LiveChanged {
+		t.Fatalf("enabled change not reported: %+v", ch)
+	}
+}

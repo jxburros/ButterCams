@@ -10,20 +10,24 @@ import (
 type Changes struct {
 	CamerasAdded   []string
 	CamerasRemoved []string
-	CamerasChanged []string // recorder-relevant fields changed: the camera must reconnect
+	CamerasChanged []string // any field of the camera changed; its worker decides whether to reconnect
 
 	DestinationsChanged bool // any destination added, removed or modified
 	StagingPathChanged  bool
 	StagingFloorChanged bool
 	ServerChanged       bool
 	LoggingChanged      bool
+
+	// LiveChanged: live view was switched on or off, or the main stream was.
+	// Shared views are not part of it: saving one touches nothing that runs.
+	LiveChanged bool
 }
 
 // Empty reports whether nothing changed.
 func (c Changes) Empty() bool {
 	return len(c.CamerasAdded) == 0 && len(c.CamerasRemoved) == 0 && len(c.CamerasChanged) == 0 &&
 		!c.DestinationsChanged && !c.StagingPathChanged && !c.StagingFloorChanged &&
-		!c.ServerChanged && !c.LoggingChanged
+		!c.ServerChanged && !c.LoggingChanged && !c.LiveChanged
 }
 
 func equalJSON(a, b any) bool {
@@ -63,5 +67,6 @@ func Diff(old, new *Config) Changes {
 		old.Staging.MinFreeGB != new.Staging.MinFreeGB
 	ch.ServerChanged = !reflect.DeepEqual(old.Server, new.Server)
 	ch.LoggingChanged = old.Logging != new.Logging
+	ch.LiveChanged = old.Live.Enabled != new.Live.Enabled || old.Live.MainStream != new.Live.MainStream
 	return ch
 }

@@ -83,6 +83,21 @@ const (
 	TypeCopyResult      = "copy_result"
 	TypeDiskStatus      = "disk_status"
 	TypeRetentionResult = "retention_result"
+
+	// guardian → worker (spec 16.8)
+	TypeRestream = "restream"
+
+	// worker → guardian
+	TypeRestreamReady   = "restream_ready"
+	TypeRestreamSession = "restream_session"
+
+	// guardian → media
+	TypeAssignMedia   = "assign_media"
+	TypeSourceChanged = "source_changed"
+
+	// media → guardian (heartbeat and event are shared with the workers)
+	TypeMediaReady = "media_ready"
+	TypeMediaStats = "media_stats"
 )
 
 // Header is embedded in every message.
@@ -177,6 +192,10 @@ type CameraStats struct {
 	CurrentFileBytes   int64   `json:"currentFileBytes,omitempty"`
 	SingleSession      bool    `json:"singleSession,omitempty"`
 	DroppedPackets     uint64  `json:"droppedPackets,omitempty"`
+	// RestreamDropped counts packets the loopback restream lost because its
+	// client (the media process) was not keeping up (spec 16.3). The recorder
+	// itself never waits for it.
+	RestreamDropped uint64 `json:"restreamDropped,omitempty"`
 }
 
 // SegmentOpened announces a new recording file.
@@ -383,6 +402,20 @@ func typeOf(msg any) (string, error) {
 		return TypeRetentionJob, nil
 	case *RetentionResult:
 		return TypeRetentionResult, nil
+	case *Restream:
+		return TypeRestream, nil
+	case *RestreamReady:
+		return TypeRestreamReady, nil
+	case *RestreamSession:
+		return TypeRestreamSession, nil
+	case *AssignMedia:
+		return TypeAssignMedia, nil
+	case *SourceChanged:
+		return TypeSourceChanged, nil
+	case *MediaReady:
+		return TypeMediaReady, nil
+	case *MediaStats:
+		return TypeMediaStats, nil
 	}
 	return "", fmt.Errorf("ipc: unknown message %T", msg)
 }
@@ -447,6 +480,20 @@ func Unmarshal(line []byte) (any, error) {
 		msg = &RetentionJob{}
 	case TypeRetentionResult:
 		msg = &RetentionResult{}
+	case TypeRestream:
+		msg = &Restream{}
+	case TypeRestreamReady:
+		msg = &RestreamReady{}
+	case TypeRestreamSession:
+		msg = &RestreamSession{}
+	case TypeAssignMedia:
+		msg = &AssignMedia{}
+	case TypeSourceChanged:
+		msg = &SourceChanged{}
+	case TypeMediaReady:
+		msg = &MediaReady{}
+	case TypeMediaStats:
+		msg = &MediaStats{}
 	default:
 		return nil, nil
 	}

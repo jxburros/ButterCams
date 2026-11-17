@@ -11,7 +11,7 @@
 //	}
 //
 // Migrations work on the raw JSON document so that they do not depend on Go
-// types that keep changing. v1 is the first schema, so it registers none.
+// types that keep changing.
 package migrations
 
 import (

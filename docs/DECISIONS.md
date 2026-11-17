@@ -500,6 +500,205 @@ certificate), and there is no self-update: spec section 3 rules out cloud
 services, and an upgrade is running the new installer. See
 `docs/RELEASING.md`.
 
+## v2 as built
+
+Choices made while building live view and timeline playback (spec section
+16), where the spec and `docs/V2_PLAN.md` left room.
+
+### 45. `internal/stream` holds what the recorder and the media process share
+
+The plan moves the packet processor out of the worker. The fan-out
+(`Fanout`, `Reader`, `Packet`) and the builder of the MP4 header
+(`stream.InitSegment`) moved with it, because the restream and the live muxer
+need the same types and the same header. The move renamed fields to exported
+names and changed nothing else; the recorder tests were adjusted for the names
+only.
+
+### 46. `hvc1` is set by renaming the sample entry
+
+The MP4 library writes H.265 with the `hev1` sample entry. `InitSegment`
+renames it to `hvc1` in the bytes it returns: same length, and correct because
+all parameter sets are in the header (the recorder starts a new file when they
+change). The H.265 recording test checks the entry and still decodes the file
+with ffmpeg.
+
+### 47. What a Viewer with a camera limit sees
+
+- Lists (cameras, recording cameras, saved views, the `cameras` event) are
+  filtered to the user's cameras.
+- A request that names another camera gets `403 forbidden`. A request that
+  names a segment of another camera gets `404`, exactly like a segment that
+  does not exist, so segment ids cannot be probed.
+- **Events and health reasons:** only those that carry one of the user's
+  cameras. System-wide events and reasons (a worker restarted, a destination
+  failing) are hidden from limited Viewers, because their text often names
+  cameras ("Cameras affected: …"). The overall status is still shown.
+- The limit is read from `users.json` on every request, so changing it takes
+  effect at once, also for sessions and event streams that are already open.
+- Every route is registered with a `CameraRule`. `TestLimitedViewerIsFencedIn`
+  walks the route list as a limited Viewer; a new route that names a camera
+  fails the test until it is added to its table.
+
+### 48. Saved views never block a camera change
+
+Deleting a camera removes it from the shared views (in `Normalize`), instead
+of rejecting the configuration. A user's own views are stored as saved and
+filtered when read: cameras that no longer exist, or that the user may no
+longer see, are left out. Saving one's own views is the only change a Viewer
+may make besides signing out.
+
+### 49. Tokens between the guardian, the media process and the workers
+
+- The media process starts listening only after its first `assign_media`,
+  which carries the token for that run; the guardian makes a new token every
+  time it starts the process. A request without it, or not from 127.0.0.1,
+  gets 403.
+- The workers' restream uses one token per guardian run, sent in `restream`
+  and passed to the media process in `assign_media`. Clients present it as
+  the RTSP password of the user `buttercams`.
+- The guardian removes `Cookie`, `Origin`, the CSRF header and any
+  `X-ButterCams-*` header from a proxied request before adding its own, so a
+  browser can neither hand its session to the media process nor name a file.
+
+### 50. How file paths reach the media process
+
+For `/segments/{id}/play/…` the guardian resolves the segment to its candidate
+paths, nearest first, and sends them in the header `X-ButterCams-Paths` (a
+JSON list, base64). For the file being recorded it sends the `.part.mp4` path
+first and the closed name second, in case the file is closed at that moment.
+Network shares that need credentials are connected by the guardian (at most
+once a minute per destination, waiting at most 3 s); the connection belongs to
+the logon session, so the media process can open the file without ever
+holding a password for a destination.
+
+### 51. The sub stream is tested after the main stream
+
+"Test connection" closes its main-stream sessions before it connects to the
+sub stream, so a camera with a low session limit is not reported as refusing
+its sub stream for the wrong reason. The price is a longer test (a few
+seconds more).
+
+### 52. The media process and health
+
+A media process that has been down for two minutes is a Warning
+(`media_down`), never Critical. Its restarts are recorded as `info` events
+(`media_restarted`); a restart loop as a warning. It is restarted at once
+when it uses more than 1 GB, without waiting for the hour as workers do,
+because viewers simply reconnect.
+
+### 53. This is version 2.0.0
+
+Live view and timeline playback are "Version 2" in the spec, and the
+configuration file changes its schema, so the release version moves from
+1.0.0 to 2.0.0.
+
+### 54. The restream inside the worker
+
+- The camera goroutine only publishes its list of live sessions (one atomic
+  store) and, when a session is new, sends `restream_session`. It never calls
+  into the restream. The restream's pump notices that a session ended by
+  looking at that list every 250 ms, so a client of an ended session is
+  disconnected up to 250 ms late.
+- One pump goroutine per camera, running only while a client plays. It copies
+  the RTP header before writing, because the RTSP server stamps its own SSRC
+  on packets and fan-out packets are read-only.
+- A client that stops reading is disconnected at the first write error, not
+  waited for. `restreamDropped` therefore rises only when the pump itself
+  falls behind.
+- A second client for a session is refused with 503 at DESCRIBE already.
+  After a pump panic the camera answers 404 until its next session; the event
+  is `restream_failed` (warning).
+- `restream_session` is sent only while the restream is on, so
+  `live.mainStream: false` leaves no trace in a worker. A repeated identical
+  `restream` message answers with the same port; a new token starts a new
+  server.
+- "The file is identical with a viewer attached" is tested by comparing the
+  frame table (times, durations, sizes, flags) of a camera with a stuck
+  restream client against an unwatched camera recording the same stream.
+
+### 55. The live muxer and the stream hub
+
+- **Audio rides in fragments of its own.** Video fragments are the same for
+  every viewer; audio goes in audio-only fragments after each video frame,
+  only to viewers who asked for it. There are two initialization segments
+  (video, video with audio).
+- The G.711/G.726 converter of a main source is created with the first
+  listener and dropped with the last. A viewer who wants sound is held for
+  the moment it takes to build the audio header rather than started silent,
+  because a browser cannot add a track to a playing source buffer.
+- A frame's duration is predicted from the previous interval, so no frame
+  waits for the next one. The live timeline never has a hole: after a
+  reconnect, a jump or a change of session it simply continues one frame
+  later, and a reconnect with the same parameters sends no new `init`.
+- Headers change only at a keyframe. A viewer whose queue overflowed gets the
+  header again at the next keyframe.
+- The 2 s limit of a viewer's queue is the age of its oldest message, not
+  seconds of video: a new viewer legitimately receives a whole keyframe
+  interval at once. The pictures kept for new viewers are capped at 24 MB.
+- Retries: main stream every second; a sub stream with the recorder's
+  backoff; a wrong password, path or codec on a sub stream every 30 s.
+- A make-before-break switch is given up after 20 s without a keyframe.
+- A sub stream can be watched even when recording is switched off for the
+  camera. `audio=1` on a sub stream is ignored.
+
+### 56. The playback file server
+
+- A chunk runs from one keyframe-fragment to the next; fragments that do not
+  start with a keyframe belong to the chunk before them.
+- Index times are milliseconds with three decimals, so the player can get the
+  exact 90 kHz tick back and join files without a hole.
+- The index also carries `videoMime`, and `/play/keyframes` takes `init=1`:
+  keyframe-only fragments hold no audio, and appended to a buffer that
+  expects audio they stall playback, so keyframe mode plays in a video-only
+  source of its own.
+- A `.part.mp4` path is treated as growing whatever the request says. A
+  handle opened on it keeps working after the rename at close.
+- One shared handle per file, closed 30 s after its last use. The read budget
+  (40 MB/s) allows a burst of a quarter second, so a seek is answered at once.
+- H.265 files recorded by v1 keep `hev1` in their MIME string: Chrome plays
+  them, Safari is told it cannot and offers the download.
+- **The hourly seam.** About half the time the old file ends with the same
+  keyframe chunk the new file starts with, because both sessions delivered
+  it. The rule (in the stitch test and in the player): when the old file's
+  end overlaps the new file's start by more than half a frame, the old file's
+  trailing chunks from (new start − one frame) on are left out, and the new
+  file is placed exactly at the end of what was kept.
+
+### 57. The Live page
+
+- Every `init` message starts a fresh `MediaSource`; a parameter change
+  blinks once.
+- A WebSocket that is refused tells the page nothing, so the player asks the
+  same address with a plain request to read the reason for the tile.
+- The player holds 1.1× until it is under 0.5 s behind, and trims its buffer
+  to 10 s once 14 s are buffered. A backlog of 8 MB in the page reconnects.
+- A tile prefers the sub stream, then main; the single view prefers main,
+  then sub. A stream the browser cannot play is not tried again for that
+  tile.
+- Every view pages when it holds more cameras than its layout. The selected
+  view and the layout of "All cameras" stay per browser.
+- Importing version 1's views merges them into the user's own; declining
+  also counts as handled. "Share with everyone" copies a view to the shared
+  list and keeps the own one.
+- The sound button appears only for cameras whose recorder reports audio.
+
+### 58. The timeline player
+
+- Files are placed as a chain anchored at each seek; a seek outside the
+  buffer rebuilds the chain. A file after a gap is placed 5 s later on the
+  player's own timeline and the gap is jumped.
+- Times are shown in the browser's time zone, and a day runs from local
+  midnight to local midnight there (23 or 25 hours on clock-change days).
+  When the server's offset differs, the page says so.
+- Above 4× the player switches to keyframe mode when the browser drops more
+  than a quarter of the frames, and stays there until the speed is lowered.
+- Scrubbing starts on the first pointer move (a plain click just seeks) and
+  seeks at most every 150 ms.
+- In synchronized playback the first camera drives the clock. Corrections
+  stop when a player is within a quarter of the 150 ms tolerance.
+- The mouse wheel zooms the timeline; Shift+wheel pans it.
+- Thumbnails come from the first camera, one picture per 2 s of recording.
+
 ## Not verified here
 
 The build environment was Linux without a Windows machine. These parts are
@@ -514,3 +713,31 @@ cross-build and the collection and verification of the release files were
 run locally with the toolkit, but the hosted run (Inno Setup, smoke test,
 draft, publication) happens for the first time when it is dispatched. Use
 the dry run first.
+
+### Version 2
+
+Built and tested on Linux with the camera simulator, ffmpeg and headless
+Chromium (H.264 only; that Chromium has no H.265 decoder). Still to be
+verified, none of it run here:
+
+- **Windows:** below-normal priority of the media process; the hourly
+  rename, staging cleanup and retention while a file is being played
+  (`OpenShared` is tested by the Windows CI job, the three scenarios through
+  the media process are not); playback from a network share with
+  credentials; the new chaos actions (`kill-media`, `pin-media`, `viewers`).
+- **Browsers and devices:** Safari on Mac and iPhone (`ManagedMediaSource`,
+  the iOS-before-17.1 message), Chrome on Android, touch gestures on real
+  screens, full screen, H.265 playback and the fallback when a browser
+  cannot play it, sound in a real browser.
+- **Endurance and load (spec 16.10, 16.11):** 16 tiles for 8 hours, 4 tiles
+  on a phone for an hour, 20 viewers, 24 consecutive hour files in the
+  browser, media process CPU and memory with 60 sub streams, recorder CPU
+  with viewers, both clock-change days on a real clock, Tailscale.
+- **Real cameras:** sub stream paths per brand in `docs/OPERATIONS.md` are
+  the documented ones of those brands and were not tried; UDP sub streams;
+  cameras that send AAC as LATM.
+- **The live session switch at the top of the hour with the real restream
+  and the real hub together.** Each side is tested against a stand-in
+  (`restream_test.go` with a plain client, `live_main_test.go` with the
+  simulator).
+

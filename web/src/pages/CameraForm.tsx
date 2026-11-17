@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { ClipboardEvent, FormEvent } from 'react';
 import { api } from '../api/client';
-import type { Camera, CameraInput, CameraTestResult, Destination, Transport } from '../api/types';
+import type { Camera, CameraInput, CameraTestResult, Destination, SubStreamTestResult, Transport } from '../api/types';
 import { Alert } from '../components/Alert';
 import { CheckboxField, SelectField, TextField } from '../components/Fields';
 import {
@@ -21,6 +21,7 @@ interface Values {
   host: string;
   port: string;
   path: string;
+  subStreamPath: string;
   username: string;
   password: string;
   clearPassword: boolean;
@@ -39,6 +40,7 @@ const FIELDS = [
   'host',
   'port',
   'path',
+  'subStreamPath',
   'username',
   'password',
   'clearPassword',
@@ -55,6 +57,7 @@ function initialValues(camera: Camera | null): Values {
       host: '',
       port: String(DEFAULT_RTSP_PORT),
       path: '',
+      subStreamPath: '',
       username: '',
       password: '',
       clearPassword: false,
@@ -70,6 +73,7 @@ function initialValues(camera: Camera | null): Values {
     host: camera.host,
     port: String(camera.port),
     path: camera.path,
+    subStreamPath: camera.subStreamPath ?? '',
     username: camera.username ?? '',
     password: '',
     clearPassword: false,
@@ -92,6 +96,12 @@ function checkConnection(values: Values): FieldErrors {
     errors.path = 'Path must not contain spaces.';
   } else if (path !== '' && !path.startsWith('/')) {
     errors.path = 'Path must start with a slash, for example /stream1.';
+  }
+  const sub = values.subStreamPath.trim();
+  if (/\s/.test(sub)) {
+    errors.subStreamPath = 'The sub stream path must not contain spaces.';
+  } else if (sub !== '' && !sub.startsWith('/')) {
+    errors.subStreamPath = 'The sub stream path must start with a slash, for example /stream2.';
   }
   return errors;
 }
@@ -122,6 +132,8 @@ function toInput(values: Values, camera: Camera | null): CameraInput {
     transport: values.transport,
     recordAudio: values.recordAudio,
     destinationIds: values.destinationIds,
+    // Always sent: an empty value removes the sub stream.
+    subStreamPath: values.subStreamPath.trim(),
   };
   if (camera === null) input.id = values.id;
   if (values.password !== '') input.password = values.password;
@@ -132,6 +144,41 @@ function toInput(values: Values, camera: Camera | null): CameraInput {
 function secondSessionText(allowed: boolean | null): string {
   if (allowed === null) return 'Could not be determined';
   return allowed ? 'Allowed' : 'Not allowed (the camera accepts one connection at a time)';
+}
+
+function SubStreamResult({ sub }: { sub: SubStreamTestResult }) {
+  const warnings = sub.warnings ?? [];
+  return (
+    <div role="status">
+      <h3>Sub stream</h3>
+      {sub.ok ? (
+        <dl className="facts">
+          <div>
+            <dt>Video codec</dt>
+            <dd>{formatCodec(sub.videoCodec)}</dd>
+          </div>
+          <div>
+            <dt>Resolution</dt>
+            <dd>{formatResolution(sub.width, sub.height)}</dd>
+          </div>
+        </dl>
+      ) : (
+        <Alert kind="error">
+          The sub stream did not answer: {sub.error || 'no reason was given.'} Recording is not affected; the live grid
+          cannot use this path.
+        </Alert>
+      )}
+      {warnings.length > 0 ? (
+        <Alert kind="warning">
+          <ul className="plain-list">
+            {warnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        </Alert>
+      ) : null}
+    </div>
+  );
 }
 
 function TestResult({ result }: { result: CameraTestResult }) {
@@ -183,6 +230,7 @@ function TestResult({ result }: { result: CameraTestResult }) {
           </ul>
         </Alert>
       ) : null}
+      {result.sub ? <SubStreamResult sub={result.sub} /> : null}
     </div>
   );
 }
@@ -434,6 +482,22 @@ export function CameraForm({ camera, existingIds, destinations, onSaved, onCance
             placeholder="/stream1"
           />
         </div>
+        <TextField
+          label="Sub stream path (optional)"
+          value={values.subStreamPath}
+          onChange={(subStreamPath) => set('subStreamPath', subStreamPath)}
+          error={errors.subStreamPath}
+          spellCheck={false}
+          autoCapitalize="none"
+          placeholder="/stream2"
+          hint={
+            <>
+              The camera’s second, low-resolution stream. The live grid uses it so that many cameras fit on one screen;
+              it is never recorded. Set it to H.264 in the camera. Examples: Hikvision <code>/Streaming/Channels/102</code>,
+              Dahua and Amcrest <code>/cam/realmonitor?channel=1&amp;subtype=1</code>. Leave empty if the camera has none.
+            </>
+          }
+        />
         <div className="form-grid">
           <TextField
             label="User name"

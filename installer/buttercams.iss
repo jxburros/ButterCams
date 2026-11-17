@@ -11,7 +11,7 @@
 ;   setup test-destination   the Test button on the destination page
 
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "2.0.0"
 #endif
 
 [Setup]

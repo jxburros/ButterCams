@@ -48,6 +48,10 @@ jobs:
           npm ci
           npm run build
 
+      - name: Test the web players
+        working-directory: web
+        run: npm test
+
       - name: Check formatting
         if: runner.os == 'Linux'
         run: test -z "$(gofmt -l cmd internal test web/embed.go)"

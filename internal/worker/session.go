@@ -19,6 +19,7 @@ import (
 
 	"github.com/jxburros/buttercams/internal/audio"
 	"github.com/jxburros/buttercams/internal/config"
+	"github.com/jxburros/buttercams/internal/stream"
 	"github.com/jxburros/buttercams/internal/version"
 )
 
@@ -98,6 +99,14 @@ type session struct {
 	err  error
 }
 
+// audioFormat returns the format of the audio track, or nil without one.
+func (s *session) audioFormat() format.Format {
+	if s.audio == nil {
+		return nil
+	}
+	return s.audio.format
+}
+
 // processStart anchors monotonic time: durations since it are immune to
 // wall-clock changes (spec 6.6).
 var processStart = time.Now()
@@ -169,9 +178,9 @@ type dialOptions struct {
 	id       uint64
 	cam      config.Camera
 	password string
-	publish  func(*Packet)    // nil for a probe that only inspects the stream
-	onPacket func(*Packet)    // optional tap used by the probe
-	now      func() time.Time // wall clock; nil means time.Now
+	publish  func(*stream.Packet) // nil for a probe that only inspects the stream
+	onPacket func(*stream.Packet) // optional tap used by the probe
+	now      func() time.Time     // wall clock; nil means time.Now
 }
 
 // dialSession performs DESCRIBE, SETUP and PLAY within ConnectTimeout.
@@ -304,16 +313,16 @@ func (s *session) connect(c *gortsplib.Client, u *base.URL, opt dialOptions) err
 	if clock == nil {
 		clock = time.Now
 	}
-	deliver := func(track Track, media *description.Media) func(*rtp.Packet) {
+	deliver := func(track stream.Track, media *description.Media) func(*rtp.Packet) {
 		return func(pkt *rtp.Packet) {
 			now := clock()
-			if track == TrackVideo {
+			if track == stream.TrackVideo {
 				s.lastVideo.Store(now.UnixNano())
 				s.lastVideoMono.Store(int64(time.Since(processStart)))
 			}
 			s.bytes.Add(uint64(len(pkt.Payload)))
 			pts, ok := c.PacketPTS(media, pkt)
-			p := &Packet{Session: s.id, Track: track, RTP: pkt, PTS: pts, PTSValid: ok, Recv: now}
+			p := &stream.Packet{Session: s.id, Track: track, RTP: pkt, PTS: pts, PTSValid: ok, Recv: now}
 			if opt.publish != nil {
 				opt.publish(p)
 			}
@@ -322,9 +331,9 @@ func (s *session) connect(c *gortsplib.Client, u *base.URL, opt dialOptions) err
 			}
 		}
 	}
-	c.OnPacketRTP(s.videoMedia, s.videoFormat, deliver(TrackVideo, s.videoMedia))
+	c.OnPacketRTP(s.videoMedia, s.videoFormat, deliver(stream.TrackVideo, s.videoMedia))
 	if s.audio != nil {
-		c.OnPacketRTP(s.audio.media, s.audio.format, deliver(TrackAudio, s.audio.media))
+		c.OnPacketRTP(s.audio.media, s.audio.format, deliver(stream.TrackAudio, s.audio.media))
 	}
 
 	s.playedAt = time.Now()

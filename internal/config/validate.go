@@ -140,6 +140,16 @@ func Validate(c *Config, env Env) error {
 		camIDs[cam.ID] = true
 	}
 
+	// live
+	ve.Fields = append(ve.Fields, ValidateViews(c.Live.Views, "live.views")...)
+	for i, v := range c.Live.Views {
+		for _, id := range v.CameraIDs {
+			if !camIDs[id] {
+				ve.add(fmt.Sprintf("live.views[%d].cameraIds", i), "Camera %q does not exist.", id)
+			}
+		}
+	}
+
 	if len(ve.Fields) > 0 {
 		return ve
 	}
@@ -211,6 +221,13 @@ func validateCamera(ve *ValidationError, f func(string) string, cam Camera, dest
 		ve.add(f("path"), "The stream path must start with /.")
 	} else if strings.ContainsAny(cam.Path, " \t\r\n") {
 		ve.add(f("path"), "The stream path cannot contain spaces.")
+	}
+	if cam.SubStreamPath != nil {
+		if sub := *cam.SubStreamPath; !strings.HasPrefix(sub, "/") {
+			ve.add(f("subStreamPath"), "The sub stream path must start with /.")
+		} else if strings.ContainsAny(sub, " \t\r\n") {
+			ve.add(f("subStreamPath"), "The sub stream path cannot contain spaces.")
+		}
 	}
 	if cam.Transport != "tcp" && cam.Transport != "udp" {
 		ve.add(f("transport"), `Transport must be "tcp" or "udp".`)

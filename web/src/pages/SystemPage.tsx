@@ -5,6 +5,7 @@ import { REFRESH_MS, useLoad, usePageTitle } from '../lib/hooks';
 import { AboutSection } from './system/AboutSection';
 import { CertificateSection } from './system/CertificateSection';
 import { ConfigSection } from './system/ConfigSection';
+import { LiveSection } from './system/LiveSection';
 import { LoggingSection } from './system/LoggingSection';
 import { NetworkSection } from './system/NetworkSection';
 import { RebuildSection } from './system/RebuildSection';
@@ -16,6 +17,7 @@ const SECTIONS: [string, string][] = [
   ['staging-settings-heading', 'Staging'],
   ['network-heading', 'Network'],
   ['certificate-heading', 'Certificate'],
+  ['live-settings-heading', 'Live view'],
   ['users-heading', 'Users'],
   ['logging-heading', 'Logging'],
   ['config-heading', 'Configuration'],
@@ -71,6 +73,7 @@ export function SystemPage() {
             certificate={info.certificate}
             onUploaded={(certificate) => system.replace({ ...info, certificate })}
           />
+          <LiveSection key={`live-${revision}`} system={info} onUpdated={system.replace} />
           <UsersSection />
           <LoggingSection key={`logging-${revision}`} system={info} onUpdated={system.replace} />
           <ConfigSection onImported={() => void afterImport()} />

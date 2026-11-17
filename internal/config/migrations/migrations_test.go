@@ -48,8 +48,34 @@ func TestRunRefusesNewerAndBrokenDocuments(t *testing.T) {
 	}
 }
 
-func TestV1RegistersNoMigrations(t *testing.T) {
-	if got := Registered(); len(got) != 0 {
-		t.Fatalf("v1 has no migrations, found %v", got)
+func TestRegisteredMigrations(t *testing.T) {
+	if got := Registered(); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("expected exactly the v1 to v2 migration, found %v", got)
+	}
+}
+
+// Schema 2 adds the live section with live view switched on (spec 16.8).
+func TestV1ToV2AddsLive(t *testing.T) {
+	sub := "/sub"
+	doc := map[string]any{"schemaVersion": float64(1),
+		"cameras": []any{map[string]any{"id": "a", "subStreamPath": sub}}}
+	from, err := Run(doc, 2)
+	if err != nil || from != 1 {
+		t.Fatalf("from %d, %v", from, err)
+	}
+	live, ok := doc["live"].(map[string]any)
+	if !ok || live["enabled"] != true || live["mainStream"] != true {
+		t.Fatalf("live section: %#v", doc["live"])
+	}
+	if views, ok := live["views"].([]any); !ok || len(views) != 0 {
+		t.Fatalf("views: %#v", live["views"])
+	}
+	if cam := doc["cameras"].([]any)[0].(map[string]any); cam["subStreamPath"] != sub {
+		t.Fatal("the sub stream path of a camera was not kept")
+	}
+	// A document that already has the section (a hand-edited file) keeps it.
+	doc = map[string]any{"schemaVersion": float64(1), "live": map[string]any{"enabled": false}}
+	if _, err := Run(doc, 2); err != nil || doc["live"].(map[string]any)["enabled"] != false {
+		t.Fatalf("an existing live section was replaced: %#v, %v", doc["live"], err)
 	}
 }
