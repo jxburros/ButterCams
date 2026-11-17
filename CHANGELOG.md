@@ -5,6 +5,77 @@ workflow publishes the sections of every version since the last release as
 the release notes, so write them for the people who install ButterCams.
 `bump` (see docs/RELEASING.md) adds the section for a new version.
 
+## 2.0.1
+
+Fixes from a review of the whole of ButterCams after version 2.0.0.
+
+Recording:
+
+- Recording can no longer stall, and recorder processes are no longer
+  restarted for nothing, while the service is busy with its database (for
+  example during an index rebuild).
+- Deleting a camera together with its recordings and then adding a camera
+  with the same name no longer deletes the new camera's recordings.
+- Two destinations, or a destination and the staging folder, can no longer
+  be the same folder or one inside the other. That could leave the only
+  copy of a recording deleted while the index still listed it. Existing
+  destinations set up that way keep recording, with a warning on the
+  Dashboard.
+- A slow disk no longer makes a camera start extra files as if the clock
+  had changed.
+- Staging that runs low on space no longer deletes more recordings than
+  needed.
+- A camera that is switched on gets the normal grace period before it is
+  reported as not recording.
+- A destination whose copies could never be made no longer shows a queue
+  that never empties.
+- "buttercams rebuild-index" also finds recordings in earlier staging
+  folders.
+- The Recordings camera list shows a deleted camera only while it still has
+  recordings.
+
+Live view and playback:
+
+- Cameras that send large network packets now play in full-quality live
+  view; before, their picture could not be shown.
+- Opening a high-resolution camera shows a picture at once instead of after
+  the next keyframe, and sound stays in step after a camera reconnects.
+- Watching the hour being recorded carries on into the next hour instead of
+  stopping at the top of the hour, and playback that runs past midnight
+  keeps playing.
+- With several cameras side by side, playback keeps going when the first
+  camera's recordings end, and a camera that cannot be played is no longer
+  retried several times a second.
+- Fast playback (8× and 16×) of high-bitrate cameras no longer stops with a
+  "buffer full" error.
+- Live tiles whose stream cannot be shown no longer reconnect every second.
+- Full-quality live view no longer freezes for a few seconds at the top of
+  the hour, when the camera's connection is refreshed.
+- H.265 recordings report their format correctly to the browser, so
+  browsers that play H.265 recognise them.
+- Single view of a camera has its own address: the browser's or the
+  phone's Back button returns to the grid, and reloading the page keeps the
+  camera open.
+- "Turn sound on" is shown only when the stream being watched has sound.
+
+Accounts:
+
+- A live picture stops within seconds when the viewer signs out, the account
+  is deleted, or the camera is taken away from them; so does the page's live
+  status feed.
+- Changing a user's cameras together with their role or password is applied
+  whole or not at all, and a new account is never left with access to more
+  cameras than asked for.
+- A Viewer limited to some cameras no longer sees other cameras' file names
+  in destination errors.
+
+Other:
+
+- Changes to a camera or a destination are recorded on the Events page,
+  like additions and deletions.
+- Clearer messages when live view is switched off and after changing only
+  the staging free-space floor.
+
 ## 2.0.0
 
 Live view and timeline playback: you can now watch your cameras in the

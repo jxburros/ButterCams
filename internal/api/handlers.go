@@ -380,6 +380,7 @@ func (s *Server) handleCameraUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cam, _ := cfg.Camera(id)
+	s.audit(r, "camera_changed", "Camera "+cam.Name+" was changed.", cam.ID)
 	writeJSON(w, http.StatusOK, toCameraView(cam, s.backend.CameraStats()))
 }
 
@@ -610,7 +611,29 @@ func (s *Server) destinationsPayload() map[string]any {
 }
 
 func (s *Server) handleDestinationsList(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.destinationsPayload())
+	p := s.destinationsPayload()
+	if !s.scopeOf(r).All() {
+		p = restrictDestinations(p)
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// restrictDestinations removes what could name other cameras from the
+// storage state shown to a limited Viewer: copy errors quote file paths,
+// and those carry camera ids.
+func restrictDestinations(p map[string]any) map[string]any {
+	list, ok := p["destinations"].([]destinationView)
+	if !ok {
+		return p
+	}
+	out := make([]destinationView, len(list))
+	for i, d := range list {
+		if d.Status.LastError != "" {
+			d.Status.LastError = "Copies to this destination are failing."
+		}
+		out[i] = d
+	}
+	return map[string]any{"destinations": out, "staging": p["staging"]}
 }
 
 type destinationInput struct {
@@ -737,6 +760,7 @@ func (s *Server) handleDestinationUpdate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	d, _ := cfg.Destination(id)
+	s.audit(r, "destination_changed", "Destination "+d.Name+" was changed.", "")
 	statuses, _ := s.backend.Storage()
 	writeJSON(w, http.StatusOK, toDestinationView(d, statuses))
 }
@@ -862,7 +886,7 @@ func (s *Server) handleRecordingCameras(w http.ResponseWriter, r *http.Request) 
 			out = append(out, item{ID: c.ID, Name: c.Name})
 		}
 	}
-	if rows, err := s.backend.Index().Cameras(); err == nil {
+	if rows, err := s.backend.Index().CamerasWithRecordings(); err == nil {
 		for _, row := range rows {
 			if !seen[row.ID] && sc.Allows(row.ID) {
 				out = append(out, item{ID: row.ID, Name: row.Name, Deleted: true})
@@ -1321,7 +1345,13 @@ func camerasInput(raw json.RawMessage) (set bool, cameras *[]string, err error) 
 	if list == nil {
 		list = []string{}
 	}
-	return true, &list, nil
+	// Checked here, before anything is stored: a request is applied whole
+	// or not at all.
+	cameras, err = CleanCameraLimit(&list)
+	if err != nil {
+		return false, nil, err
+	}
+	return true, cameras, nil
 }
 
 func (s *Server) handleUsersList(w http.ResponseWriter, r *http.Request) {
@@ -1356,6 +1386,8 @@ func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if setCams && cams != nil {
 		if u, err = s.users.SetCameras(u.Username, cams); err != nil {
+			// Never leave an account with more access than was asked for.
+			s.users.Delete(strings.TrimSpace(in.Username))
 			s.writeFail(w, err)
 			return
 		}
@@ -1380,21 +1412,28 @@ func (s *Server) handleUserUpdate(w http.ResponseWriter, r *http.Request) {
 		s.writeFail(w, err)
 		return
 	}
+	prev, _ := s.users.Get(name)
 	u, err := s.users.Update(name, in.Password, in.Role)
 	if err != nil {
 		s.writeFail(w, err)
 		return
 	}
-	if setCams {
-		if u, err = s.users.SetCameras(u.Username, cams); err != nil {
-			s.writeFail(w, err)
-			return
-		}
-	}
 	me, _ := sessionOf(r)
 	if in.Password != "" {
 		s.sessions.dropUser(u.Username, me.token) // other sessions of that user must sign in again
 	}
+	if setCams {
+		if u, err = s.users.SetCameras(u.Username, cams); err != nil {
+			// The limit could not be stored: the role goes back too, so the
+			// account never ends up with more access than before.
+			if in.Role != "" && prev.Role != "" && prev.Role != in.Role {
+				s.users.Update(name, "", prev.Role)
+			}
+			s.writeFail(w, err)
+			return
+		}
+	}
+	// What was stored applies to the user's open sessions at once.
 	s.sessions.setRole(u.Username, u.Role)
 	s.audit(r, "user_changed", "User "+u.Username+" was changed.", "")
 	writeJSON(w, http.StatusOK, s.accountView(u))

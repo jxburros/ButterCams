@@ -119,6 +119,8 @@ function decode(url: string): Promise<string> {
 interface ThumbJob {
   segmentId: number;
   offsetMs: number;
+  /** The file is still being recorded: its picture near the end may change. */
+  open: boolean;
   done: (picture: string | null) => void;
 }
 
@@ -128,7 +130,9 @@ export class Thumbnails {
     const { key, tMs } = thumbKey(job.segmentId, job.offsetMs);
     try {
       const picture = await decode(api.playThumbUrl(job.segmentId, tMs));
-      pictures.set(key, picture);
+      // A file being recorded answers with its newest keyframe near its end,
+      // which is not the picture of that moment later: not kept.
+      if (!job.open) pictures.set(key, picture);
       job.done(picture);
     } catch {
       job.done(null); // H.265 in a browser without it, or no copy reachable: no picture
@@ -141,12 +145,12 @@ export class Thumbnails {
   }
 
   /** Asks for a picture; `done` is called once, unless a newer request replaces this one. */
-  request(segmentId: number, offsetMs: number, done: (picture: string | null) => void): void {
+  request(segmentId: number, offsetMs: number, done: (picture: string | null) => void, open = false): void {
     const known = this.cached(segmentId, offsetMs);
     if (known !== null) {
       done(known);
       return;
     }
-    this.queue.request({ segmentId, offsetMs, done });
+    this.queue.request({ segmentId, offsetMs, done, open });
   }
 }

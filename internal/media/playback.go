@@ -427,7 +427,9 @@ func (p *Playback) growingIndex(f *file) (*mp4meta.Index, error) {
 	}
 	mp4meta.ExtendIndex(f, f.size, g.ix)
 	snap := *g.ix
-	snap.Chunks = g.ix.Chunks[:len(g.ix.Chunks):len(g.ix.Chunks)]
+	// A copy: ExtendIndex changes the last chunk in place as the file grows,
+	// while this snapshot is read outside the lock.
+	snap.Chunks = append([]mp4meta.Chunk(nil), g.ix.Chunks...)
 	return &snap, nil
 }
 
@@ -571,9 +573,14 @@ func (p *Playback) ServeKeyframes(w http.ResponseWriter, r *http.Request, paths 
 		return
 	}
 	p.with(w, r, paths, func(f *file, ix *mp4meta.Index) {
-		var out []byte
+		// Each fragment is written as soon as it is read: an answer of up to
+		// MaxKeyframes large keyframes is never held in memory at once.
+		w.Header().Set("Content-Type", "video/mp4")
+		cacheHeader(w, ix, 3600)
 		if r.URL.Query().Get("init") == "1" {
-			out = append(out, ix.VideoInit...)
+			if _, err := w.Write(ix.VideoInit); err != nil {
+				return
+			}
 		}
 		n := 0
 		for i, c := range ix.Chunks {
@@ -591,13 +598,11 @@ func (p *Playback) ServeKeyframes(w http.ResponseWriter, r *http.Request, paths 
 				p.log.Debug("a keyframe could not be read", "file", filepath.Base(f.path), "error", err.Error())
 				continue
 			}
-			out = append(out, frag...)
+			if _, err := w.Write(frag); err != nil {
+				return
+			}
 			n++
 		}
-		w.Header().Set("Content-Type", "video/mp4")
-		w.Header().Set("X-Keyframes", strconv.Itoa(n))
-		cacheHeader(w, ix, 3600)
-		w.Write(out)
 	})
 }
 

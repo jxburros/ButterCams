@@ -3,6 +3,7 @@ import type { StreamKind } from '../api/types';
 import {
   BACKOFF_MS,
   backoffDelay,
+  holeSkip,
   codecLabel,
   liveEdgeAction,
   parseLiveMessage,
@@ -105,5 +106,16 @@ describe('texts', () => {
   it('turns the WebSocket address into the HTTP one', () => {
     expect(probeUrl('wss://nvr:8650/api/v1/live/a/sub?audio=0')).toBe('https://nvr:8650/api/v1/live/a/sub?audio=0');
     expect(probeUrl('ws://localhost/api/v1/live/a/main')).toBe('http://localhost/api/v1/live/a/main');
+  });
+});
+
+describe('holes in the live buffer', () => {
+  it('skips a hole the playhead stands at', () => {
+    expect(holeSkip([[0, 446.9], [447.4, 450]], 446.88)).toBeCloseTo(447.41, 5);
+    expect(holeSkip([[0, 446.9], [447.4, 450]], 447.0)).toBeCloseTo(447.41, 5);
+  });
+  it('leaves playback alone inside a range or without a later one', () => {
+    expect(holeSkip([[0, 446.9], [447.4, 450]], 440)).toBeNull();
+    expect(holeSkip([[0, 450]], 449.95)).toBeNull();
   });
 });

@@ -53,7 +53,10 @@ export interface AttachedSource {
   mediaSource: MediaSource;
   /** `true` when it is a ManagedMediaSource. */
   managed: boolean;
-  /** Resolves when the source is open and SourceBuffers can be added. */
+  /**
+   * Resolves when the source is open and SourceBuffers can be added, or when
+   * it was detached first: check `mediaSource.readyState` afterwards.
+   */
   opened: Promise<void>;
   /** Releases the object URL and detaches the source from the video. */
   detach: () => void;
@@ -73,7 +76,9 @@ export function attachMediaSource(video: HTMLVideoElement): AttachedSource | nul
     (video as HTMLVideoElement & { disableRemotePlayback: boolean }).disableRemotePlayback = true;
   }
   const url = URL.createObjectURL(mediaSource);
+  let settle = () => {};
   const opened = new Promise<void>((resolve) => {
+    settle = resolve;
     if (mediaSource.readyState === 'open') resolve();
     else mediaSource.addEventListener('sourceopen', () => resolve(), { once: true });
   });
@@ -86,6 +91,9 @@ export function attachMediaSource(video: HTMLVideoElement): AttachedSource | nul
     detach: () => {
       if (detached) return;
       detached = true;
+      // A source detached before it opened never opens: release whoever
+      // waits for it (they check readyState), so nothing waits forever.
+      settle();
       URL.revokeObjectURL(url);
       if (video.src === url) {
         video.removeAttribute('src');

@@ -61,7 +61,8 @@ export function StagingSection({ system, onUpdated }: SectionProps) {
   const [values, setValues] = useState<Values>(() => fromSystem(system));
   const [errors, setErrors] = useState<FieldErrors>({});
   const [failure, setFailure] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  /** After a save: whether the folder itself changed. */
+  const [saved, setSaved] = useState<false | 'folder' | 'floor'>(false);
   const [busy, setBusy] = useState(false);
 
   function set<K extends keyof Values>(key: K, value: Values[K]) {
@@ -86,9 +87,10 @@ export function StagingSection({ system, onUpdated }: SectionProps) {
           minFreeGB: Number(values.minFreeGB.trim()),
         },
       });
+      const folderChanged = updated.staging.path !== system.staging.path;
       onUpdated(updated);
       setValues(fromSystem(updated));
-      setSaved(true);
+      setSaved(folderChanged ? 'folder' : 'floor');
     } catch (err) {
       const result = serverErrors(err, FIELDS);
       setErrors(result.fields);
@@ -109,8 +111,9 @@ export function StagingSection({ system, onUpdated }: SectionProps) {
         {failure ? <Alert kind="error">{failure}</Alert> : null}
         {saved ? (
           <Alert kind="success">
-            Staging settings saved. A new folder is used by each camera from its next hour file; files already in the
-            old folder stay there until they are copied.
+            {saved === 'folder'
+              ? 'Staging settings saved. A new folder is used by each camera from its next hour file; files already in the old folder stay there until they are copied.'
+              : 'Staging settings saved.'}
           </Alert>
         ) : null}
         <TextField

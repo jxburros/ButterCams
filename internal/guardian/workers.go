@@ -309,9 +309,14 @@ func (g *Guardian) onCameraStats(workerID int, m *ipc.CameraStats) {
 	}
 	changed := live.lastState != m.State
 	live.stats, live.received, live.workerID, live.lastState = *m, now, workerID, m.State
-	if m.State == ipc.StateRecording {
+	switch {
+	case m.State == ipc.StateRecording:
 		live.notRecordingSince = time.Time{}
-	} else if live.notRecordingSince.IsZero() {
+	case m.State == ipc.StateDisabled:
+		// A disabled camera is not "down". Keep the mark fresh so that, once
+		// it is enabled, the 2 and 15 minute grace periods start then.
+		live.notRecordingSince = now
+	case live.notRecordingSince.IsZero():
 		live.notRecordingSince = now
 	}
 	g.mu.Unlock()
@@ -392,9 +397,7 @@ func (g *Guardian) onSegmentClosed(m *ipc.SegmentClosed) {
 	name := filepath.Base(m.Path)
 	g.noteStagingRoot(m.Path)
 
-	g.mu.Lock()
-	_, purged := g.purged[m.CameraID]
-	g.mu.Unlock()
+	purged := g.isPurged(m.CameraID, m.Start.Time)
 	var targets []string
 	if !purged {
 		targets = copyTargets(cfg, m.CameraID)
@@ -440,8 +443,19 @@ func (g *Guardian) onSegmentClosed(m *ipc.SegmentClosed) {
 // neither indexed nor on disk.
 func (g *Guardian) renameToFree(path, cameraID string, start time.Time) (newPath, newName string, err error) {
 	dir := filepath.Dir(path)
+	var dbErr error
+	tries := 0
 	newName = naming.NextFree(cameraID, start, func(final string) bool {
-		if taken, err := g.db.NameTaken(cameraID, final); err != nil || taken {
+		tries++
+		if dbErr != nil || tries > 1000 {
+			return false // stop searching; the error is returned below
+		}
+		taken, err := g.db.NameTaken(cameraID, final)
+		if err != nil {
+			dbErr = err
+			return false
+		}
+		if taken {
 			return true
 		}
 		if _, err := os.Stat(filepath.Join(dir, final)); err == nil {
@@ -452,6 +466,12 @@ func (g *Guardian) renameToFree(path, cameraID string, start time.Time) (newPath
 		}
 		return false
 	})
+	if dbErr != nil {
+		return "", "", fmt.Errorf("checking which names are used: %w", dbErr)
+	}
+	if tries > 1000 {
+		return "", "", fmt.Errorf("no free name found for %s", filepath.Base(path))
+	}
 	newPath = filepath.Join(dir, newName)
 	if err := os.Rename(path, newPath); err != nil {
 		return "", "", err

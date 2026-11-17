@@ -28,6 +28,16 @@ const (
 // (Names are protected against reuse by the index, not by keeping files.)
 var stagingHold time.Duration
 
+// OldStagingPaths returns the earlier staging folders remembered in the
+// index, which may still hold recordings (spec 7.1).
+func OldStagingPaths(db *index.DB) []string {
+	var paths []string
+	if v, ok := db.Meta(metaOldStaging); ok {
+		json.Unmarshal([]byte(v), &paths)
+	}
+	return paths
+}
+
 func (g *Guardian) loadOldStaging() {
 	if v, ok := g.db.Meta(metaOldStaging); ok {
 		var paths []string
@@ -44,6 +54,25 @@ func (g *Guardian) saveOldStaging() {
 	if err := g.db.SetMeta(metaOldStaging, string(b)); err != nil {
 		g.log.Error("could not remember the previous staging folder", "error", err.Error())
 	}
+}
+
+// isPurged reports whether a recording belongs to a camera that was deleted
+// together with its recordings: one that started before the deletion, or any
+// file while the camera is still deleted (its worker may start one more file
+// before the removal reaches it). A camera added again under the same id
+// keeps what it records.
+func (g *Guardian) isPurged(cameraID string, start time.Time) bool {
+	g.mu.Lock()
+	at, ok := g.purged[cameraID]
+	g.mu.Unlock()
+	if !ok {
+		return false
+	}
+	if start.Before(at) {
+		return true
+	}
+	_, configured := g.config().Camera(cameraID)
+	return !configured
 }
 
 func (g *Guardian) startMover() {
@@ -94,7 +123,7 @@ func (g *Guardian) sendDestinations() {
 // survives a mover crash, a guardian restart or a reboot (spec 9).
 func (g *Guardian) onMoverStart() {
 	g.mu.Lock()
-	g.pendingDel = map[string]map[int64]bool{} // deletes in flight were lost with the old process
+	g.pendingDel = map[string]map[int64]int64{} // deletes in flight were lost with the old process
 	g.mu.Unlock()
 	g.sendDestinations()
 	g.requeueCopies()
@@ -180,10 +209,7 @@ func (g *Guardian) onCopyResult(m *ipc.CopyResult) {
 		}
 		// A recording of a camera that was deleted meanwhile is removed again.
 		if seg, err := g.db.Segment(m.SegmentID); err == nil {
-			g.mu.Lock()
-			_, purged := g.purged[seg.CameraID]
-			g.mu.Unlock()
-			if purged {
+			if g.isPurged(seg.CameraID, seg.Start) {
 				g.sendDeletes(m.DestinationID, []ipc.DeleteItem{{SegmentID: seg.ID, CameraID: seg.CameraID,
 					FileName: seg.FileName, Bytes: seg.Bytes, Reason: ipc.DeleteCameraDeleted}})
 			}
@@ -271,7 +297,7 @@ func (g *Guardian) notPending(dest string, stored []index.StoredFile) []mover.Fi
 	pend := g.pendingDel[dest]
 	out := make([]mover.File, 0, len(stored))
 	for _, f := range stored {
-		if pend[f.SegmentID] {
+		if _, inFlight := pend[f.SegmentID]; inFlight {
 			continue
 		}
 		out = append(out, mover.File{SegmentID: f.SegmentID, CameraID: f.CameraID, FileName: f.FileName,
@@ -285,6 +311,16 @@ func (g *Guardian) notPending(dest string, stored []index.StoredFile) []mover.Fi
 func (g *Guardian) stagingRetention(cfg *config.Config, m *ipc.DiskStatus) {
 	now := time.Now()
 	freed := uint64(0)
+	// Deletes sent earlier and not yet reported free space soon too. Without
+	// them a status that arrives before they finish would pick more files,
+	// including ones that were never copied.
+	g.mu.Lock()
+	for _, b := range g.pendingDel[ipc.StagingID] {
+		if b > 0 {
+			freed += uint64(b)
+		}
+	}
+	g.mu.Unlock()
 	if copied, err := g.db.CopiedEverywhere(); err == nil {
 		var items []ipc.DeleteItem
 		for _, f := range g.notPending(ipc.StagingID, copied) {
@@ -344,11 +380,11 @@ func (g *Guardian) sendDeletes(dest string, items []ipc.DeleteItem) {
 	g.mu.Lock()
 	pend := g.pendingDel[dest]
 	if pend == nil {
-		pend = map[int64]bool{}
+		pend = map[int64]int64{}
 		g.pendingDel[dest] = pend
 	}
 	for _, it := range items {
-		pend[it.SegmentID] = true
+		pend[it.SegmentID] = it.Bytes
 	}
 	g.mu.Unlock()
 	for len(items) > 0 {

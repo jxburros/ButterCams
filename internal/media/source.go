@@ -26,6 +26,8 @@ const (
 	// switchTimeout is how long a second session may take to deliver its
 	// first keyframe before the make-before-break switch is abandoned.
 	switchTimeout = 20 * time.Second
+	// initAllowance covers the initialization segments sent with a replay.
+	initAllowance = 64 << 10
 )
 
 type sourceKey struct {
@@ -132,6 +134,7 @@ func (s *source) attach(v *viewer) {
 	s.viewers[v] = struct{}{}
 	now := time.Now()
 	if s.state == statePlaying && s.gopOK {
+		v.allowJoin(s.gopSize + initAllowance)
 		for _, f := range s.gop {
 			s.sendLocked(v, f, now)
 		}
@@ -239,7 +242,12 @@ func (s *source) setState(state, message string) {
 		msg := stateMessage(message)
 		now := time.Now()
 		for v := range s.viewers {
-			v.push(true, msg, now)
+			if !v.push(true, msg, now) {
+				// Its queue was emptied, perhaps with the initialization
+				// segment in it: it must get a new one with the next picture.
+				v.lastInit = nil
+				s.h.overflows.Add(1)
+			}
 		}
 	}
 	s.mu.Unlock()
@@ -529,6 +537,7 @@ func (s *source) syncAudio() {
 		if s.state == statePlaying && s.gopOK && (s.initA != nil || !s.audioSoon) {
 			for v := range s.viewers {
 				if v.audio && v.lastInit == nil {
+					v.allowJoin(s.gopSize + initAllowance)
 					for _, f := range s.gop {
 						s.sendLocked(v, f, now)
 					}
@@ -593,6 +602,12 @@ func (s *source) handle(c *conn, p *stream.Packet) {
 	if c.aproc == nil {
 		return
 	}
+	if s.needKey {
+		// After a reconnect the muxer's timeline still belongs to the old
+		// connection until this one's first keyframe: audio placed now
+		// would stay out of step with the video for good.
+		return
+	}
 	ap := c.aproc.AudioParams
 	for _, u := range c.aproc.Push(p) {
 		if !u.Video && ap != nil && s.mux.audio(u, ap.Timescale) {
@@ -619,6 +634,7 @@ func (s *source) handleNext(p *stream.Packet) {
 		old := s.cur
 		s.cur, s.next = n, nil
 		s.needKey = false
+		s.h.log.Info("live source moved to the camera's new session", "camera", s.key.camera, "stream", s.key.stream)
 		s.mux.dropAudio()
 		go old.close()
 		s.syncAudio()

@@ -27,6 +27,12 @@ func (g *Guardian) UpdateConfig(mutate func(*config.Config) error) (*config.Conf
 		return nil, err
 	}
 	next.Normalize()
+	// Folders shared between destinations or with staging are refused when
+	// a change brings them in; ones an older configuration already has are
+	// only reported (see config.StorageOverlaps).
+	if ov := config.NewStorageOverlaps(old, next, config.Env{IsRemoteDrive: winsvc.IsRemoteDrive}); len(ov) > 0 {
+		return nil, &config.ValidationError{Fields: ov}
+	}
 	if err := g.store.Save(next); err != nil {
 		return nil, err
 	}
@@ -162,8 +168,9 @@ func (g *Guardian) applyChanges(old, next *config.Config, ch config.Changes) {
 // PurgeCamera deletes every indexed recording of a camera that was deleted
 // with "keep recordings" switched off. Only files in the index are touched.
 func (g *Guardian) PurgeCamera(cameraID string) {
+	at := time.Now()
 	g.mu.Lock()
-	g.purged[cameraID] = time.Now()
+	g.purged[cameraID] = at
 	g.mu.Unlock()
 	g.wg.Add(1)
 	go func() {
@@ -185,7 +192,9 @@ func (g *Guardian) PurgeCamera(cameraID string) {
 			}
 			byDest := map[string][]ipc.DeleteItem{}
 			for _, s := range segs {
-				if !s.Closed() {
+				// A camera added again under the same id meanwhile keeps
+				// what it recorded after the deletion.
+				if !s.Closed() || !g.isPurged(cameraID, s.Start) {
 					continue
 				}
 				for _, c := range s.Copies {

@@ -45,6 +45,9 @@ export function holdClock(bufferingSinceMs: number | null, nowMs: number): boole
   return bufferingSinceMs !== null && nowMs - bufferingSinceMs < SYNC_MAX_HOLD_MS;
 }
 
+/** How often a player that failed is asked to try again while the group plays. */
+export const FAILED_RETRY_MS = 10_000;
+
 /** The part of a player the group needs. TimelinePlayer implements it. */
 export interface SyncPlayer {
   /** Wall-clock position, or `null` when nothing is loaded. */
@@ -55,6 +58,8 @@ export interface SyncPlayer {
   isBuffering(): boolean;
   /** `true` when the player has video loaded at its position (playing or paused). */
   isLoaded(): boolean;
+  /** `true` when the player gave up (an error, or a codec the browser cannot play). */
+  hasFailed?(): boolean;
   seekWall(wallMs: number, play: boolean): void;
   play(): void;
   pause(): void;
@@ -80,6 +85,8 @@ export class SyncGroup {
   private bufferingSince = new Map<SyncPlayer, number>();
   private correcting = new Set<SyncPlayer>();
   private clockMs: number | null = null;
+  /** When a failed player was last asked to try again. */
+  private retriedAt = new Map<SyncPlayer, number>();
   private readonly now: () => number;
 
   constructor(now: () => number = () => Date.now()) {
@@ -90,13 +97,24 @@ export class SyncGroup {
     this.players = players.slice(0, MAX_SYNC_PLAYERS);
     this.bufferingSince.clear();
     this.correcting.clear();
+    this.retriedAt.clear();
   }
 
-  /** The shared wall clock: the first player's position, else the last known one. */
+  /**
+   * The player that drives the clock: the first one with video at its
+   * position. When the first camera has stopped (its recordings ended, an
+   * error), the next one takes over, so the others are never held to a
+   * clock that no longer moves.
+   */
+  private source(): SyncPlayer | undefined {
+    return this.players.find((p) => p.isLoaded() && p.wallTime() !== null);
+  }
+
+  /** The shared wall clock: the driving player's position, else the last known one. */
   wallTime(): number | null {
-    const master = this.players[0];
-    const t = master?.wallTime() ?? null;
-    if (t !== null && master?.isLoaded()) this.clockMs = t;
+    const src = this.source();
+    const t = src?.wallTime() ?? null;
+    if (t !== null) this.clockMs = t;
     return this.clockMs;
   }
 
@@ -187,7 +205,17 @@ export class SyncGroup {
 
     const clock = this.wallTime();
     if (clock === null) return;
-    for (const p of this.players.slice(1)) {
+    const src = this.source() ?? master;
+    for (const p of this.players) {
+      if (p === src) continue;
+      if (p.hasFailed?.()) {
+        // It gave up: try again now and then, not on every round.
+        const last = this.retriedAt.get(p) ?? 0;
+        if (now - last < FAILED_RETRY_MS || !p.hasRecordingAt(clock)) continue;
+        this.retriedAt.set(p, now);
+        p.seekWall(clock, true);
+        continue;
+      }
       if (!p.hasRecordingAt(clock)) {
         // Nothing recorded on this camera right now: say so, and join again
         // at its next span.

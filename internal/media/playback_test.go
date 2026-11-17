@@ -479,7 +479,15 @@ func TestPlaybackOfTheFileBeingWritten(t *testing.T) {
 			res, _ := c.Do("data", nil, open, http.Header{"Range": {"bytes=" + strconv.FormatInt(end, 10) + "-"}})
 			res.Body.Close()
 			if res.StatusCode != http.StatusRequestedRangeNotSatisfiable {
-				t.Fatalf("reading past the last finished fragment answered %d", res.StatusCode)
+				// Every request extends the index of the growing file, so a
+				// fragment finished in between makes the byte readable.
+				// That is fine only if the index now lists it.
+				now, err := c.Index(open)
+				grown := err == nil && len(now.Chunks) > 0 &&
+					int64(now.Chunks[len(now.Chunks)-1][2]+now.Chunks[len(now.Chunks)-1][3]) > end
+				if !grown {
+					t.Fatalf("reading past the last finished fragment answered %d", res.StatusCode)
+				}
 			}
 			res, _ = c.Do("data", nil, open, http.Header{"Range": {"bytes=0-9"}})
 			res.Body.Close()

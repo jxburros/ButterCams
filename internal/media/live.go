@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"strings"
 
-	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/mp4/codecs"
 
 	"github.com/jxburros/buttercams/internal/mp4meta"
@@ -61,49 +59,12 @@ func videoCodecString(vp stream.VideoParams) string {
 }
 
 // hevcCodecString builds the codec string from the profile, tier and level
-// at the start of the SPS (ISO/IEC 14496-15, annex E), for example
-// "hvc1.1.6.L93.B0": profile space and profile, the compatibility flags in
-// reverse bit order, tier and level, then the constraint bytes without
-// trailing zeros.
+// in the SPS (ISO/IEC 14496-15, annex E), for example "hvc1.1.6.L93.B0".
 func hevcCodecString(sps []byte) string {
-	const fallback = "hvc1.1.6.L93.B0"
-	raw := h264.EmulationPreventionRemove(sps)
-	// 2 bytes NAL header, 1 byte ids, then profile_tier_level: 12 bytes.
-	if len(raw) < 15 {
-		return fallback
+	if s := mp4meta.HEVCCodecString("hvc1", sps); s != "" {
+		return s
 	}
-	ptl := raw[3:15]
-	space := ptl[0] >> 6
-	tier := (ptl[0] >> 5) & 1
-	profile := ptl[0] & 0x1F
-	compat := binary.BigEndian.Uint32(ptl[1:5])
-	var reversed uint32
-	for i := 0; i < 32; i++ {
-		reversed = reversed<<1 | (compat>>i)&1
-	}
-	level := ptl[11]
-
-	var b strings.Builder
-	b.WriteString("hvc1.")
-	if space > 0 {
-		b.WriteByte('A' + space - 1)
-	}
-	fmt.Fprintf(&b, "%d.%X.", profile, reversed)
-	if tier == 1 {
-		b.WriteByte('H')
-	} else {
-		b.WriteByte('L')
-	}
-	fmt.Fprintf(&b, "%d", level)
-	constraints := ptl[5:11]
-	n := len(constraints)
-	for n > 0 && constraints[n-1] == 0 {
-		n--
-	}
-	for _, c := range constraints[:n] {
-		fmt.Fprintf(&b, ".%X", c)
-	}
-	return b.String()
+	return "hvc1.1.6.L93.B0"
 }
 
 // audioCodecString returns the codec string of an audio track.

@@ -119,6 +119,10 @@ type mount struct {
 	client  *gortsplib.ServerSession
 	playing bool
 	conns   int // connections that were given this mount by DESCRIBE
+
+	// Used by the camera's pump goroutine only.
+	repack    *repacker // set at the first video packet too large to send
+	oversized bool      // an oversized packet was seen (and logged)
 }
 
 // Start listens on a free loopback port.
@@ -449,6 +453,24 @@ func (s *Server) forward(cam *camera, pkt *stream.Packet) {
 	// Fan-out packets are read-only and the server writes its own SSRC into
 	// the header, so it gets a copy of the header. The payload is shared and
 	// only read.
+	video := pkt.Track == stream.TrackVideo
+	if video && m.repack == nil && pkt.RTP.MarshalSize() > maxRTPPacket {
+		if !m.oversized {
+			m.oversized = true
+			s.log.Info("camera sends RTP packets larger than the restream can send; repacking its video",
+				"camera", cam.id, "bytes", pkt.RTP.MarshalSize())
+		}
+		m.repack = newRepacker(f)
+	}
+	if video && m.repack != nil {
+		for _, p := range m.repack.repack(pkt.RTP) {
+			st.WritePacketRTP(media, p) //nolint:errcheck // a closed stream: its client is gone
+		}
+		return
+	}
+	if pkt.RTP.MarshalSize() > maxRTPPacket {
+		return // oversized audio: it cannot be sent, and is rare enough to skip
+	}
 	cp := &rtp.Packet{Header: pkt.RTP.Header, Payload: pkt.RTP.Payload}
 	st.WritePacketRTP(media, cp) //nolint:errcheck // a closed stream: its client is gone
 }

@@ -66,6 +66,12 @@ export interface TimelinePlayerOptions {
   onState: (state: PlayerState) => void;
   /** The camera's reported frame rate, for frame steps when the browser cannot measure it. */
   fps?: number;
+  /**
+   * Called when the player reached the newest file it knows of while that
+   * file was still being recorded moments ago: the page should fetch the
+   * timeline again, since the next hour's file has probably started.
+   */
+  onWantSpans?: () => void;
 }
 
 const TICK_MS = 250;
@@ -75,6 +81,22 @@ const RUN_MS = 12_000;
 /** Keyframe fragments asked for in one request. */
 const KEYFRAME_RUN = 60;
 const OPEN_REFRESH_MS = 2000;
+/** Most bytes of video kept ahead of the playhead in full-frame playback. */
+const MAX_AHEAD_BYTES = 64 << 20;
+
+/** The average size of a second of a file's video. */
+function bytesPerSecond(index: PlayIndex): number {
+  let bytes = 0;
+  let ms = 0;
+  for (const c of index.chunks) {
+    ms += c[1];
+    bytes += c[3];
+  }
+  return ms > 0 ? (bytes * 1000) / ms : 0;
+}
+
+/** A file that closed this recently may still be followed by one the page does not know of yet. */
+const RECENT_CLOSE_MS = 120_000;
 /** Seams and re-anchored timestamps may leave holes this small; they are stepped over. */
 const NUDGE_S = 0.75;
 
@@ -136,6 +158,10 @@ export class TimelinePlayer implements SyncPlayer {
   /** A file with another codec or track set follows: restart there when the playhead arrives. */
   private restartAt: Span | null = null;
   private noMore = false;
+  /** When onWantSpans was last called. */
+  private spansWantedAt = 0;
+  /** No appends before this time: the browser's buffer was full. */
+  private fullUntil = 0;
 
   private generation = 0;
   private pumpQueued = false;
@@ -206,6 +232,10 @@ export class TimelinePlayer implements SyncPlayer {
 
   isLoaded(): boolean {
     return this.status === 'playing' || this.status === 'paused' || this.status === 'buffering';
+  }
+
+  hasFailed(): boolean {
+    return this.status === 'error' || this.status === 'unsupported';
   }
 
   play(): void {
@@ -396,7 +426,7 @@ export class TimelinePlayer implements SyncPlayer {
       }
       this.attached = attached;
       await attached.opened;
-      if (stale()) return;
+      if (stale() || this.attached !== attached || attached.mediaSource.readyState !== 'open') return;
       this.sb = attached.mediaSource.addSourceBuffer(mime);
       this.sb.mode = 'segments';
       this.mime = mime;
@@ -503,6 +533,12 @@ export class TimelinePlayer implements SyncPlayer {
             // fall through to the retry
           }
           continue;
+        }
+        if (err instanceof DOMException && err.name === 'QuotaExceededError') {
+          // Still full with nothing behind the playhead to drop: wait for the
+          // playhead to use some up, then try again.
+          this.fullUntil = Date.now() + 1000;
+          return false;
         }
         throw err;
       }
@@ -643,6 +679,10 @@ export class TimelinePlayer implements SyncPlayer {
 
     if (head.next < limit) {
       if (!needsMore(t, Math.max(end, t), this.rate)) return false;
+      if (Date.now() < this.fullUntil) return false;
+      // Fast playback of a high-bitrate stream would otherwise ask the
+      // browser to hold more than its buffer allows (about 150 MB in Chrome).
+      if (!this.keyframes && (Math.max(end, t) - t) * bytesPerSecond(head.index) > MAX_AHEAD_BYTES) return false;
       try {
         if (this.keyframes) {
           const last = Math.min(head.next + KEYFRAME_RUN, limit) - 1;
@@ -705,6 +745,18 @@ export class TimelinePlayer implements SyncPlayer {
 
     const following = nextSpan(this.spans, head.span.id);
     if (!following) {
+      // The hour being recorded just closed: its successor exists but the
+      // page's list of files is older than that. Ask for a new list and keep
+      // waiting instead of ending playback at the top of the hour.
+      const now = Date.now();
+      const recent = head.span.open || head.span.endMs === null || now - head.span.endMs < RECENT_CLOSE_MS;
+      if (recent) {
+        if (now - this.spansWantedAt >= OPEN_REFRESH_MS) {
+          this.spansWantedAt = now;
+          this.opts.onWantSpans?.();
+        }
+        return false;
+      }
       // Nothing follows: tell the browser, so it plays the last frames out
       // instead of waiting for more.
       this.noMore = true;
